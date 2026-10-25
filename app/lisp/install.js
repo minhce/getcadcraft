@@ -60,6 +60,8 @@ export function installLisp({ def, lookup, commands, aliases }) {
       c.print(res.ok ? t('appload.loaded', { name: f.name, n: res.commands.length, commands: res.commands.join(', ') }) : t('appload.failed', { name: f.name, error: res.error || '' }));
       job.done?.(f, res);
     }
+    // S::STARTUP (acad.lsp, acaddoc.lsp, the Startup Suite): a function a loaded file defined runs once the files are in
+    if (job.startup) await s.evalText('(if S::STARTUP (progn (S::STARTUP) (princ)))');   // i18n-ignore (LISP source)
   }, { noRepeat: true, hidden: true, keepSelection: true });
 
   def('_LISPEVAL', [], async (c, engine) => {

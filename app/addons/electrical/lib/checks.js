@@ -13,6 +13,7 @@
  *   overload       a circuit drawing more current than its breaker allows (above 80 % = a warning)
  *   no-circuit     an installation device on no circuit
  *   no-breaker     a circuit with loads and no breaker rating
+ *   no-rcd         a circuit feeding socket outlets with no residual-current device of 30 mA or less named (a planning reminder)
  *   cable-cores    a cable marker crossing more wires than its CORES
  *   wireno-orphan  a wire number on no wire
  */
@@ -20,7 +21,7 @@
 import { t } from './text.js';
 import { netlist, wirenoNets } from './wires.js';
 import { devicesByTag, XREF_LINES, contactLines } from './devices.js';
-import { installation, currentOf } from './install.js';
+import { installation, currentOf, rcdMilliamps, hasSocket } from './install.js';
 import { cableCores } from './reports.js';
 import { placeOrder } from './model.js';
 import { pathAt } from './project.js';
@@ -77,6 +78,7 @@ export function runChecks(doc, model, { nl = netlist(model), overloadWarn = OVER
   for (const c of inst.circuits.values()) {
     if (!c.loads.length) continue;
     const amps = currentOf(c);
+    if (hasSocket(c)) { const ma = rcdMilliamps(c.rcd); if (ma === null || ma > 30) add('no-rcd', 'warning', { circuit: c.name, rcd: c.rcd || t('none'), place: '' }, c.def ? [c.def] : c.loads.slice(0, 1)); }
     if (!c.breaker) { add('no-breaker', 'warning', { circuit: c.name, place: '' }, c.def ? [c.def] : c.loads.slice(0, 1)); continue; }
     if (amps > c.breaker) add('overload', 'error', { circuit: c.name, amps: amps.toFixed(1), breaker: c.breaker, place: '' }, c.def ? [c.def] : c.loads.slice(0, 1));
     else if (amps > c.breaker * overloadWarn) add('near-overload', 'warning', { circuit: c.name, amps: amps.toFixed(1), breaker: c.breaker, pct: Math.round(overloadWarn * 100), place: '' }, c.def ? [c.def] : c.loads.slice(0, 1));

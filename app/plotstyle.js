@@ -6,7 +6,11 @@
  * of that colour prints as.
  *   table = { name, description, pens: { [aci 1–255]: pen } }   only pens that differ from DEFAULT_PEN are kept
  *   pen   = { color: null | '#rrggbb' (null = the object's own colour), gray: bool (print the colour as its gray),
- *             screen: 0–100 (ink intensity; 100 = full), lw: null | mm (null = the object's own lineweight) }
+ *             screen: 0–100 (ink intensity; 100 = full), lw: null | mm (null = the object's own lineweight),
+ *             lt: null | a linetype name (null = the object's own; 0.7), cap: null | 'butt' | 'square' | 'round' (line end),
+ *             join: null | 'miter' | 'bevel' | 'round', fill: null | one of FILLS (what a solid fill prints as) }
+ *   table also: lwList?: [mm…] (the lineweights it knows: a printed lineweight goes to the nearest), ltScale?: number (a factor on
+ *             the dashes of linetypes that are not ISO ones; 1 = none)
  * Built-in tables (never stored, names reserved): 'colour' (as drawn), 'monochrome' (every colour black), 'grayscale'
  * (every colour as its gray). The drawing keeps its own tables and which one the model plots with in
  * doc.meta.plotStyles = { tables: [table…], model: name }, and each sheet's in layout.plotStyle (a name). A name a file
@@ -36,7 +40,12 @@ import { aciHex, nearestAci } from './doc.js';
 export const BUILTIN = Object.freeze(['colour', 'monochrome', 'grayscale']);
 /** Lineweights a pen can set (mm), the standard list. */
 export const LINEWEIGHTS = Object.freeze([0, 0.05, 0.09, 0.13, 0.15, 0.18, 0.2, 0.25, 0.3, 0.35, 0.4, 0.5, 0.53, 0.6, 0.7, 0.8, 0.9, 1, 1.06, 1.2, 1.4, 1.58, 2, 2.11]);
-export const DEFAULT_PEN = Object.freeze({ color: null, gray: false, screen: 100, lw: null });
+export const DEFAULT_PEN = Object.freeze({ color: null, gray: false, screen: 100, lw: null, lt: null, cap: null, join: null, fill: null });
+export const CAPS = Object.freeze(['butt', 'square', 'round']);
+export const JOINS = Object.freeze(['miter', 'bevel', 'round']);
+/** What a solid fill can print as (the table editor's fill styles); each but 'solid' is hatch lines (plot.js, PATTERN_OF_FILL). */
+export const FILLS = Object.freeze(['solid', 'horizontal', 'vertical', 'slant-right', 'slant-left', 'crosshatch', 'diamonds', 'dots']);
+export const MAX_LW_LIST = 40;
 export const MAX_TABLES = 50;
 export const STYLE_BLOCK = 'CADCRAFT_PLOTSTYLES';
 const FORMAT = 'cadcraft-plotstyle', PAYLOAD = 'cadcraft-plotstyles';
@@ -95,8 +104,25 @@ export function applyPen(table, color, lw = -3) {
   if (p.gray) { const y = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]; c = [y, y, y]; }
   const s = Math.max(0, Math.min(100, Number.isFinite(p.screen) ? p.screen : 100)) / 100;
   if (s < 1) c = c.map((v) => 255 - (255 - v) * s);
-  return { color: hex(c), lw: p.lw !== null && p.lw >= 0 ? p.lw : lw };
+  return { color: hex(c), lw: snapLw(table, p.lw !== null && p.lw >= 0 ? p.lw : lw), cap: p.cap, join: p.join };
 }
+
+/** A printed lineweight (mm; -3 = the plot's default pen) gone to the nearest of the table's own list, when it has one. */
+export function snapLw(table, lw) {
+  const l = table?.lwList;
+  if (!Array.isArray(l) || !l.length || !(lw >= 0)) return lw;
+  return l.reduce((best, w) => (Math.abs(w - lw) < Math.abs(best - lw) ? w : best), l[0]);
+}
+
+/** What else a pen says about a colour's objects: { lt, fill } (null = the object's own / solid). */
+export function penStyleOf(table, color) {
+  if (!table) return { lt: null, fill: null };
+  const p = penOf(table, aciOf(color));
+  return { lt: p.lt, fill: p.fill && p.fill !== 'solid' ? p.fill : null };
+}
+
+/** Is a linetype one of the ISO ones (ACAD_ISO…)? A table's ltScale does not touch those. */
+export const isIsoLinetype = (name) => /^ACAD_ISO/i.test(String(name || ''));
 
 export function setPens(table, acis, patch) {
   const pens = { ...(table.pens || {}) };
@@ -108,7 +134,7 @@ export function setPens(table, acis, patch) {
   return { ...table, pens };
 }
 
-const isDefault = (p) => p.color === null && !p.gray && p.screen === 100 && p.lw === null;
+const isDefault = (p) => p.color === null && !p.gray && p.screen === 100 && p.lw === null && p.lt === null && p.cap === null && p.join === null && p.fill === null;
 
 // ---------------------------------------------------------------------------
 // Untrusted tables (a file, a drawing)
@@ -118,7 +144,9 @@ function cleanPen(p) {
   const color = typeof p.color === 'string' && HEX_RE.test(p.color) ? p.color.toLowerCase() : null;
   const screen = Number.isFinite(p.screen) ? Math.max(0, Math.min(100, Math.round(p.screen))) : 100;
   const lw = Number.isFinite(p.lw) && p.lw >= 0 && p.lw <= 2.11 ? Math.round(p.lw * 1000) / 1000 : null;
-  return { color, gray: p.gray === true, screen, lw };
+  const lt = typeof p.lt === 'string' && /^[^\u0000-\u001f]{1,64}$/.test(p.lt.trim()) ? p.lt.trim() : null;
+  const cap = CAPS.includes(p.cap) ? p.cap : null, join = JOINS.includes(p.join) ? p.join : null, fill = FILLS.includes(p.fill) && p.fill !== 'solid' ? p.fill : null;
+  return { color, gray: p.gray === true, screen, lw, lt, cap, join, fill };
 }
 
 export function cleanTable(obj) {
@@ -134,7 +162,9 @@ export function cleanTable(obj) {
     const p = cleanPen(v);
     if (!isDefault(p)) pens[a] = p;
   }
-  return { ok: true, table: { name, description: String(obj.description ?? '').replace(/[\u0000-\u001f]+/g, ' ').slice(0, 255), pens } };
+  const lwList = Array.isArray(obj.lwList) ? [...new Set(obj.lwList.filter((v) => Number.isFinite(v) && v >= 0 && v <= 2.11).map((v) => Math.round(v * 1000) / 1000))].sort((a, b) => a - b).slice(0, MAX_LW_LIST) : [];
+  const ltScale = Number.isFinite(obj.ltScale) && obj.ltScale > 0 && obj.ltScale <= 100 && obj.ltScale !== 1 ? obj.ltScale : null;
+  return { ok: true, table: { name, description: String(obj.description ?? '').replace(/[\u0000-\u001f]+/g, ' ').slice(0, 255), pens, ...(lwList.length ? { lwList } : {}), ...(ltScale ? { ltScale } : {}) } };
 }
 
 export function cleanPlotStyles(obj) {

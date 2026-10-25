@@ -36,6 +36,8 @@
  *   dimension    trot (text rotation, radians) and the style keys of dimstyle.js inside st
  */
 
+import { withPlain } from './mtext.js';
+import { setClosed as splineClosed } from './spline.js';
 import { TYPE_NAMES } from './doc.js';
 import { deg, rad, normAngle, TAU, curveLength, entityArea } from './geom.js';
 import { DIM_DEFAULTS, DIM_KINDS, dimMeasure } from './dims.js';
@@ -229,7 +231,7 @@ const TYPES = {
     { key: 'area', sec: 'geometry', kind: 'area', gt0: true, when: (e) => !!e.closed, get: (e) => Math.abs(entityArea(e)?.area || 0), set: (e, v) => polyToArea(e, v) },
   ],
   text: (ctx) => [
-    { key: 's', sec: 'text', kind: 'textarea', get: (e) => String(e.s ?? ''), set: (e, v) => { if (!String(v).trim()) throw new PropError('props.err.notext'); return { ...e, s: String(v) }; } },
+    { key: 's', sec: 'text', kind: 'textarea', get: (e) => String(e.s ?? ''), set: (e, v) => { if (!String(v).trim()) throw new PropError('props.err.notext'); return withPlain(e, { ...e, s: String(v) }); } },
     { key: 'style', sec: 'text', kind: 'choice', choices: () => textStyles(ctx), get: (e) => e.style || 'Standard', set: (e, v) => put(e, 'style', v, 'Standard') },
     { key: 'just', sec: 'text', kind: 'choice', choices: () => JUST.map(([h, v]) => [h + '|' + v, t('props.just.' + h + '.' + v)]), get: justKey,
       set: (e, v) => { const [ha, va] = String(v).split('|'); return { ...e, ha, va }; } },
@@ -293,6 +295,13 @@ const TYPES = {
     { key: 'vname', sec: 'misc', kind: 'text', title: 'props.f.vname.title', get: (e) => e.vname || '', set: (e, v) => put(e, 'vname', String(v || '').trim().slice(0, 255) || undefined, undefined) },   // WL.11: view labels show it
   ],
   dim: (ctx) => dimDefs(ctx),
+  spline: () => [   // 0.7 D7.10 (spline.js)
+    { key: 'sdeg', sec: 'geometry', kind: 'ro', get: (e) => String(e.degree) },
+    { key: 'sfit', sec: 'geometry', kind: 'ro', get: (e) => (e.fit ? String(e.fit.length) : '–') },
+    { key: 'sctrl', sec: 'geometry', kind: 'ro', get: (e) => String(e.periodic ? e.ctrl.length - e.degree : e.ctrl.length) },
+    { key: 'slen', sec: 'geometry', kind: 'ro-len', get: (e) => curveLength(e) },
+    { key: 'sclosed', sec: 'geometry', kind: 'bool', get: (e) => !!e.closed, set: (e, v) => splineClosed(e, !!v) },
+  ],
 };
 
 const mst = (e) => ({ asz: 2.5, dogleg: 2.5, gap: 1, ...(e.st || {}) });

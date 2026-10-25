@@ -179,9 +179,11 @@ export const COMMANDS = [
   C('tools.area', 'tools', 'bi-bounding-box', T('View', 'AREA'), tab),
   C('tools.measuregeom', 'tools', 'bi-rulers', T('View', 'MEASUREGEOM'), tab),
   C('tools.compare', 'tools', 'bi-layout-split', T('View', 'COMPARESETTINGS'), tab),
+  C('tools.history', 'tools', 'bi-clock-history', T('View', 'HISTORY'), tab),   // 0.7 D7.31
   C('tools.appload', 'tools', 'bi-filetype-js', T('View', 'APPLOAD'), tab),
   C('tools.aliasedit', 'tools', 'bi-card-text', T('View', 'ALIASEDIT'), tab),
   C('tools.shortcuts', 'tools', 'bi-keyboard', T('View', 'SHORTCUTS'), tab),
+  C('file.laser', 'file', 'bi-lightning', T('View', 'LASER'), tab),   // 0.7 SU.772: the Laser panel (View › More)
 
   // drafting aids: the status bar's toggles (cadcraft.js keydown: F3, F7, F8, F10, F11, F12)
   C('aids.osnap', 'aids', 'bi-magnet', '[data-toggle="osnap"]', { defKeys: ['F3'] }),
@@ -237,9 +239,12 @@ export const GROUPS = ['file', 'draw', 'modify', 'annotate', 'parametric', 'bloc
 const DEFAULT_KEYS = Object.fromEntries(COMMANDS.filter((c) => c.defKeys.length && !c.fixed).map((c) => [c.id, c.defKeys.slice()]));
 
 const m = (label, items) => ({ label: 'input.m.' + label, items });
-const rtab = (label, panels) => ({ label: 'input.m.' + label, panels: panels.map(([l, items]) => ({ label: 'input.m.' + l, items })) });
+const rtab = (label, panels) => ({ label: 'input.m.' + label, panels: panels.map(([l, items, o]) => ({ label: 'input.m.' + l, items, ...(o || {}) })) });
+// RIBBON-COMPACT sizes (docs/apps/app-input.md): a large button, and a group drawn mixed (large first, then small ones three high)
+const L = (id) => ({ id, size: 'lg' });
+const MIXED = { mixed: true };
 
-const FILE_MENU = ['file.new', 'file.open', 'file.samples', '-', 'file.save', 'file.saveas', '-', 'file.plot', '-', 'app.settings', 'app.palette', 'app.help'];
+const FILE_MENU = ['file.new', 'file.open', 'file.samples', '-', 'file.save', 'file.saveas', '-', 'file.plot', 'file.laser', '-', 'app.settings', 'app.palette', 'app.help'];
 const LAYERS = ['layers.iso', 'layers.uniso', 'layers.off', 'layers.frz', 'layers.mcur', 'layers.on', 'layers.thw', 'layers.mrg', 'layers.del', 'layers.rename'];
 const GEOM = ['param.horizontal', 'param.vertical', 'param.parallel', 'param.perpendicular', 'param.coincident', 'param.tangent', 'param.equal', 'param.fix', 'param.collinear', 'param.concentric', 'param.symmetric'];
 const DCONS = ['param.dclinear', 'param.dcaligned', 'param.dcangular', 'param.dcradius', 'param.dcdiameter', 'param.dcconvert'];
@@ -248,8 +253,8 @@ const TAB_3D = (names) => rtab(names[0], [
   [names[1], ['3d.extrude', '3d.presspull', '3d.box', '3d.cylinder', '3d.wedge', '3d.revolve', '3d.sweep']],
   [names[2], ['3d.union', '3d.subtract', '3d.intersect']],
   [names[3], ['3d.move', '3d.copy', '3d.rotate', '3d.erase']],
-  [names[4], ['3d.orbit', '3d.view-iso', '3d.view-top', '3d.view-bottom', '3d.view-front', '3d.view-back', '3d.view-left', '3d.view-right', '3d.persp', '3d.parallel', '3d.view-all']],
-  [names[5], ['3d.shaded', '3d.edges', '3d.hidden', '3d.wire', '3d.xray']],
+  [names[4], ['3d.orbit', '3d.view-iso', '3d.view-top', '3d.view-bottom', '3d.view-front', '3d.view-back', '3d.view-left', '3d.view-right', '3d.persp', '3d.parallel', '3d.view-all'], { mixed: true }],
+  [names[5], ['3d.shaded', '3d.edges', '3d.hidden', '3d.wire', '3d.xray'], { mixed: true }],
   [names[6], ['3d.glbout', '3d.objout', '3d.stlout']],
 ]);
 
@@ -264,22 +269,23 @@ export const STYLES = {
     menus: [m('file', FILE_MENU)],
     quick: ['file.new', 'file.open', 'file.save', 'file.saveas', 'file.plot', 'edit.undo', 'edit.redo'],
     tabs: [
+      // the classic Home tab (0.7 WS.8): the four drawing tools large, the rest small and stacked, so the tab fits one screen
       rtab('home', [
-        ['draw', ['draw.line', 'draw.pline', 'draw.circle', 'draw.arc', 'draw.rectang', 'draw.polygon', 'draw.ellipse', 'draw.hatch', 'draw.point', 'draw.circle-ttr', 'draw.circle-ttt', 'draw.xline', 'draw.ray']],
-        ['modify', ['modify.move', 'modify.rotate', 'modify.trim', 'modify.extend', 'modify.erase', 'modify.copy', 'modify.mirror', 'modify.fillet', 'modify.chamfer', 'modify.explode', 'modify.stretch', 'modify.scale', 'modify.array', 'modify.offset', 'modify.join', 'modify.break', 'modify.lengthen', 'modify.align', 'modify.alignpanel']],
-        ['annotation', ['draw.mtext', 'annotate.dimlinear', 'annotate.mleader']],
-        ['layers', LAYERS],
+        ['draw', [L('draw.line'), L('draw.pline'), L('draw.circle'), L('draw.arc'), 'draw.rectang', 'draw.polygon', 'draw.ellipse', 'draw.hatch', 'draw.point', 'draw.circle-ttr', 'draw.circle-ttt', 'draw.xline', 'draw.ray']],
+        ['modify', ['modify.move', 'modify.rotate', 'modify.trim', 'modify.extend', 'modify.erase', 'modify.copy', 'modify.mirror', 'modify.fillet', 'modify.chamfer', 'modify.explode', 'modify.stretch', 'modify.scale', 'modify.array', 'modify.offset', 'modify.join', 'modify.break', 'modify.lengthen', 'modify.align', 'modify.alignpanel'], MIXED],
+        ['annotation', [L('draw.mtext'), L('annotate.dimlinear'), 'annotate.mleader']],
+        ['layers', LAYERS, MIXED],
         ['block', ['blocks.insert', 'blocks.make']],
         ['properties', ['modify.matchprop']],
-        ['utilities', ['tools.dist', 'tools.area', 'tools.measuregeom', 'edit.qselect', 'edit.select-all', 'edit.similar', 'edit.select-none']],
-        ['clipboard', ['edit.paste', 'edit.copy', 'edit.cut', 'edit.paste-in-place', 'edit.paste-picture', 'edit.duplicate', 'edit.delete']],
+        ['utilities', ['tools.dist', 'tools.area', 'tools.measuregeom', 'edit.qselect', 'edit.select-all', 'edit.similar', 'edit.select-none'], MIXED],
+        ['clipboard', ['edit.paste', 'edit.copy', 'edit.cut', 'edit.paste-in-place', 'edit.paste-picture', 'edit.duplicate', 'edit.delete'], MIXED],
       ]),
       rtab('insert', [['block', ['blocks.bedit', 'blocks.attdef', 'blocks.eattedit', 'blocks.battman', 'blocks.refedit']], ['reference', ['blocks.xattach', 'blocks.xref']], ['library', ['blocks.library']], ['pointcloud', ['view.pcattach', 'view.pointcloud']], ['data', ['blocks.count', 'blocks.delblocks', 'blocks.exportpoints']], ['map', ['view.maplayers']]]),
-      rtab('annotate', [['text', ['draw.text', 'edit.find']], ['dimensions', ['annotate.dimaligned', 'annotate.dimangular', 'annotate.dimradius', 'annotate.dimdiameter', 'annotate.dimcontinue', 'annotate.dimbaseline']], ['markup', ['annotate.revcloud']]]),
-      rtab('parametric', [['geometric', ['param.auto', 'param.geom', ...GEOM, 'param.bars-show', 'param.bars-hide']], ['dimensional', ['param.dim', ...DCONS, 'param.dcdisplay']], ['manage', ['param.delete', 'param.parameters', 'param.swbout']]]),
-      rtab('view', [['navigate', ['view.extents', 'view.window', 'view.previous']], ['viewports', ['view.split-2v', 'view.split-2h', 'view.split-4', 'view.split-1', 'view.linkviews']], ['coordinates', ['view.turn-left', 'view.turn-right', 'view.turn-world']], ['model', ['view.model', 'view.3d', 'view.open3d']], ['aids', AIDS]]),
-      rtab('manage', [['customization', ['tools.appload', 'tools.aliasedit', 'tools.shortcuts']], ['compare', ['tools.compare']]]),
-      rtab('output', [['plot', ['file.plot']], ['sheets', ['sheets.layout', 'sheets.mview']]]),
+      rtab('annotate', [['text', ['draw.text', 'edit.find']], ['dimensions', ['annotate.dimaligned', 'annotate.dimangular', 'annotate.dimradius', 'annotate.dimdiameter', 'annotate.dimcontinue', 'annotate.dimbaseline'], MIXED], ['markup', ['annotate.revcloud']]]),
+      rtab('parametric', [['geometric', [L('param.auto'), L('param.geom'), ...GEOM, 'param.bars-show', 'param.bars-hide']], ['dimensional', ['param.dim', ...DCONS, 'param.dcdisplay'], MIXED], ['manage', ['param.delete', 'param.parameters', 'param.swbout']]]),
+      rtab('view', [['navigate', ['view.extents', 'view.window', 'view.previous']], ['viewports', ['view.split-2v', 'view.split-2h', 'view.split-4', 'view.split-1', 'view.linkviews'], MIXED], ['coordinates', ['view.turn-left', 'view.turn-right', 'view.turn-world']], ['model', ['view.model', 'view.3d', 'view.open3d']], ['aids', AIDS, MIXED]]),
+      rtab('manage', [['customization', ['tools.appload', 'tools.aliasedit', 'tools.shortcuts']], ['compare', ['tools.compare', 'tools.history']]]),
+      rtab('output', [['plot', ['file.plot', 'file.laser']], ['sheets', ['sheets.layout', 'sheets.mview']]]),
       TAB_3D(['3d', 'modeling', 'solidedit', 'modify', 'views', 'visual', 'export']),
     ],
     labels: { 'file.plot': 'input.lbl.drafting.plot', 'draw.mtext': 'input.lbl.drafting.mtext', 'annotate.dimlinear': 'input.lbl.drafting.dim', 'modify.matchprop': 'input.lbl.drafting.matchprop' },
@@ -302,10 +308,10 @@ export const STYLES = {
       rtab('annotate', [['dimensions', ['annotate.dimlinear', 'annotate.dimaligned', 'annotate.dimangular', 'annotate.dimradius', 'annotate.dimdiameter', 'annotate.dimcontinue', 'annotate.dimbaseline']], ['notes', ['annotate.mleader', 'annotate.revcloud']]]),
       rtab('parametric', [['constraints', ['param.auto', 'param.geom', 'param.dim', 'param.parameters']], ['geometric', GEOM], ['dimensional', [...DCONS, 'param.dcdisplay']], ['manage', ['param.delete', 'param.bars-show', 'param.bars-hide', 'param.swbout']]]),
       rtab('blocks', [['blocks', ['blocks.make', 'blocks.insert', 'blocks.bedit', 'blocks.attdef', 'blocks.eattedit', 'blocks.battman', 'blocks.refedit', 'blocks.count', 'blocks.delblocks', 'blocks.exportpoints']], ['links', ['blocks.xattach', 'blocks.xref', 'blocks.library']], ['layers', LAYERS]]),
-      rtab('sheets', [['sheets', ['sheets.layout', 'sheets.mview']], ['plot', ['file.plot']]]),
+      rtab('sheets', [['sheets', ['sheets.layout', 'sheets.mview']], ['plot', ['file.plot', 'file.laser']]]),
       rtab('view', [['zoom', ['view.extents', 'view.window', 'view.previous']], ['panes', ['view.split-2v', 'view.split-2h', 'view.split-4', 'view.split-1', 'view.linkviews']], ['turn', ['view.turn-left', 'view.turn-right', 'view.turn-world']], ['show', ['view.model', 'view.3d', 'view.open3d', 'view.maplayers', 'view.pcattach', 'view.pointcloud']], ['aids', AIDS]]),
       TAB_3D(['3d', 'modeling', 'solidedit', 'modify', 'views', 'visual', 'export']),
-      rtab('tools', [['measure', ['tools.dist', 'tools.area', 'tools.measuregeom']], ['customize', ['tools.appload', 'tools.aliasedit', 'tools.shortcuts', 'tools.compare']]]),
+      rtab('tools', [['measure', ['tools.dist', 'tools.area', 'tools.measuregeom']], ['customize', ['tools.appload', 'tools.aliasedit', 'tools.shortcuts', 'tools.compare', 'tools.history']]]),
     ],
     keys: { ...DEFAULT_KEYS },
     mouse: { wheel: 1, zoomSpeed: 1, pan2d: ['middle', 'right'], orbit3d: null },

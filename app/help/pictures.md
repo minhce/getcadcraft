@@ -3,7 +3,7 @@ title: Pictures in a drawing
 summary: Place a PNG or JPEG picture, clip it to a rectangle or a polygon, show the pictures a DWG uses, and plot them sharp.
 section: tasks
 order: 87
-keywords: paste picture, paste screenshot, ctrl+v, clipboard image, screenshot, picture, image, imageattach, iat, image, imageclip, clip, png, jpeg, jpg, logo, photo, raster, imagedef, xref, plot, pdf, resolution
+keywords: ole, ole2frame, embedded object, paste picture, paste screenshot, ctrl+v, clipboard image, screenshot, picture, image, imageattach, iat, image, imageclip, clip, png, jpeg, jpg, logo, photo, raster, imagedef, xref, plot, pdf, resolution
 ---
 
 ## What you will make
@@ -59,6 +59,15 @@ Pictures go into the PDF as pictures, at their own resolution and under the line
 |---|---|
 | DWG (every version) | As pictures (IMAGE), with their clip |
 | DXF | As their frames with the file name; the save says so |
+
+## Objects from other programs (OLE)
+
+A drawing can hold objects another program made, such as a picture from a paint program or a spreadsheet range (OLE objects). CadCraft doesn't run or edit them, and can't insert new ones. What it does:
+
+- **In a DXF**, an OLE object opens as a frame. If the object saved a picture of itself and that picture is a bitmap, the picture is drawn inside the frame; otherwise the frame carries a label with the object's type, such as "Microsoft Excel Worksheet (OLE)". You can move, copy and erase the frame like a block. {{cmd:SAVEAS}} to DXF 2000 writes it as an OLE object again, with its data unchanged.
+- **In a DWG**, the objects are kept and written back when you save as a DWG, byte for byte, but they are **not shown**: a DWG keeps an object's place inside its own data, and CadCraft doesn't read it yet. The history says how many were kept.
+- An object that came from a DXF is saved in a DWG as its frame and label only; the history says so. Save as DXF 2000 to keep the object itself.
+- Pictures that are metafiles (what many programs save) are not drawn: the frame and label show instead.
 
 ## Common mistakes
 

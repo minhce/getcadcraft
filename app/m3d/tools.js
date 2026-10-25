@@ -14,7 +14,7 @@
  *   sel, setSel(list)       the selection [{t: 'e'|'f'|'i'|'g'|'d', id}] in the open context (g guide, d dimension)
  *   overlay(o)              {lines: [{a, b, kind, dash}], marker: {p, kind}, faces: [[A,B,C]…], rect, poly, points}
  *   tip(text) · vcb(label, text) · print(msg) · changed() · openContext(path) · closeContext()
- *   units                   'ft-in' | 'in' | 'm' | 'cm' | 'mm'
+ *   units                   'ft-in' | 'in' | 'ft' | 'yd' | 'mi' | 'mil' | 'm' | 'cm' | 'mm' | 'um' | 'km'
  * }
  * Clicks: press–release in place = a click; press, drag, release = two clicks (both styles draw).
  * Arrow keys lock the red (→), green (←) and blue (↑) axis, ↓ the last edge's direction; Shift holds
@@ -31,14 +31,14 @@ import { infer, pick, pickWindow, alongLine, pickDim, pickSection, angleLayout, 
 import {
   addEdge, addPolygon, rectPts, ngonPts, pushPull, transformSel, copySel, eraseEdges, faceWithEdges, connected,
   edgeFaces, removeLooseVerts, arcPts, tagCurve, offsetFacePts, offsetFace, offsetChainPts, faceNormal, paintFaces, paintInstance,
-  smoothPts, addSpline, editSpline, followMe, chainThrough,
+  smoothPts, addSpline, editSpline, followMe, chainThrough, edgeBetween, dividePlan, divideEdges, DIVIDE_MAX,
 } from './model.js';
 import { parseValue, formatLength } from './units.js';
 import { collider } from './collide.js';
 import { t } from "./i18n.js";
 
 /** Tool names in the page's language (getters: the catalog is read when a name is asked for). */
-export const TOOL_NAMES = Object.defineProperties({}, Object.fromEntries(['select', 'line', 'rect', 'circle', 'polygon', 'arc', 'arcc', 'curve', 'follow', 'offset', 'paint', 'push', 'move', 'rotate', 'scale', 'erase', 'tape', 'protractor', 'dim', 'section', 'orbit', 'pan', 'zoom', 'place', 'paste', 'pick', 'axes', 'sculpt', 'light'].map((k) => [k, { get: () => t('m3d.toolname.' + k), enumerable: true }])));
+export const TOOL_NAMES = Object.defineProperties({}, Object.fromEntries(['select', 'line', 'rect', 'circle', 'polygon', 'arc', 'arcc', 'curve', 'follow', 'offset', 'paint', 'push', 'move', 'rotate', 'scale', 'erase', 'tape', 'protractor', 'dim', 'section', 'orbit', 'pan', 'zoom', 'place', 'paste', 'pick', 'axes', 'sculpt', 'light', 'divide'].map((k) => [k, { get: () => t('m3d.toolname.' + k), enumerable: true }])));
 /** Single-key shortcuts (lower case; ' ' = Space). */
 export const TOOL_KEYS = { ' ': 'select', l: 'line', r: 'rect', c: 'circle', n: 'polygon', a: 'arc', f: 'offset', b: 'paint', p: 'push', m: 'move', q: 'rotate', s: 'scale', e: 'erase', t: 'tape', d: 'dim', o: 'orbit', h: 'pan', z: 'zoom' };
 
@@ -64,7 +64,7 @@ export class Tools {
     if (this.tool) this.tool.cancel();
     this.name = name;
     this.lock = null;
-    const C = { select: SelectTool, line: LineTool, rect: RectTool, circle: CircleTool, polygon: CircleTool, arc: ArcTool, arcc: ArcCenterTool, curve: CurveTool, follow: FollowTool, offset: OffsetTool, paint: PaintTool, push: PushTool, move: MoveTool, rotate: RotateTool, scale: ScaleTool, erase: EraseTool, tape: TapeTool, protractor: ProtractorTool, dim: DimTool, section: SectionTool, orbit: CamTool, pan: CamTool, zoom: CamTool, place: PlaceTool, paste: PasteTool, pick: PickTool, axes: AxesTool, sculpt: SculptTool, light: LightTool }[name] || SelectTool;
+    const C = { select: SelectTool, line: LineTool, rect: RectTool, circle: CircleTool, polygon: CircleTool, arc: ArcTool, arcc: ArcCenterTool, curve: CurveTool, follow: FollowTool, offset: OffsetTool, paint: PaintTool, push: PushTool, move: MoveTool, rotate: RotateTool, scale: ScaleTool, erase: EraseTool, tape: TapeTool, protractor: ProtractorTool, dim: DimTool, section: SectionTool, orbit: CamTool, pan: CamTool, zoom: CamTool, place: PlaceTool, paste: PasteTool, pick: PickTool, axes: AxesTool, sculpt: SculptTool, light: LightTool, divide: DivideTool }[name] || EXTRA_TOOLS.get(name) || SelectTool;
     this.tool = new C(this, name, arg);
     this.host.toolSet?.(name);
     this.host.overlay(null);
@@ -110,6 +110,7 @@ export class Tools {
   value(text) {
     const v = parseValue(text, this.host.units);
     if (!v) { this.host.print(t('m3d.tool.type_a_length')); return false; }
+    if (v.kind === 'error') { this.host.print(v.message); return false; }   // 0.7 MC-CALC: a calculation that says where it went wrong
     return this.tool.value(v, text) !== false;
   }
   escape() {
@@ -192,6 +193,26 @@ export class Tools {
   pickAt(ev) {
     return pickDim(this.host.model, this.host.cam, ev.x, ev.y, (m) => formatLength(m, this.host.units), this.touch ? 14 : 6) || pickSection(this.host.model, this.host.cam, ev.x, ev.y, this.touch ? 14 : 6) || pick(this.host.scene(), this.host.cam, ev.x, ev.y, { path: this.host.path, radius: this.touch ? 14 : 7 });
   }
+  /** What the selection divides (0.7 MC-DIVIDE): one edge → {edge}, the edges of one curve → {curve, edge}, else null. */
+  divideTarget() {
+    const sel = this.host.sel, def = this.ctx().def;
+    if (!sel.length || sel.some((s) => s.t !== 'e')) return null;
+    const e0 = def.edges.get(sel[0].id);
+    if (!e0) return null;
+    if (sel.length === 1) return e0.curve ? { curve: e0.curve, edge: sel[0].id } : { edge: sel[0].id };
+    return e0.curve && sel.every((s) => def.edges.get(s.id)?.curve === e0.curve) ? { curve: e0.curve, edge: sel[0].id } : null;
+  }
+  /** Divide the selected edge or curve into n equal parts as one undo step; the pieces become the selection. True when there was one. */
+  divideSel(n) {
+    const w = this.divideTarget();
+    if (!w) return false;
+    let r;
+    try { r = this.host.model.change(t('m3d.undo.divide'), (m) => divideEdges(m.context(this.host.path).def, w, n), [this.ctx().def.id]); } catch (err) { this.host.print(err.message); return true; }
+    this.host.print(t('m3d.tool.divided', { n }));
+    this.host.setSel(r.edges.map((id) => ({ t: 'e', id })));
+    this.host.changed();
+    return true;
+  }
   /** A typed length for a lone selected dimension or edge: resize the model to it. True when used. */
   resizeSel(v) {
     const sel = this.host.sel, m = this.host.model;
@@ -199,7 +220,7 @@ export class Tools {
     if (!(v.v > 0)) { this.host.print(t('m3d.tool.type_a_length_above_zero')); return true; }
     const s = sel[0], kind = s.t === 'd' ? m.dims.get(s.id)?.kind : null;
     if (kind === 'ang') { this.host.print(t('m3d.model.dim_angle_only')); return true; }
-    try { m.change(s.t === 'd' ? t('m3d.tool.dimension_length') : t('m3d.tool.edge_length'), (mm) => (s.t === 'd' ? mm.setDimLength(s.id, v.v) : mm.setEdgeLength(this.host.path, s.id, v.v))); }
+    try { m.change(s.t === 'd' ? t('m3d.tool.dimension_length') : t('m3d.tool.edge_length'), (mm) => (s.t === 'd' ? mm.setDimLength(s.id, v.v) : mm.setEdgeLength(this.host.path, s.id, v.v)), s.t === 'd' ? m.dimScope(s.id) : [m.context(this.host.path).def.id]); }
     catch (err) { this.host.print(err.message); return true; }
     this.host.print(t(s.t !== 'd' ? 'm3d.tool.edge_set' : kind === 'rad' ? 'm3d.tool.rad_set' : kind === 'dia' ? 'm3d.tool.dia_set' : 'm3d.tool.dim_set', { len: formatLength(v.v, this.host.units) }));
     this.host.setSel(sel.filter((x) => (x.t === 'd' ? m.dims.has(x.id) : this.ctx().def.edges.has(x.id))));
@@ -214,7 +235,14 @@ export class Tools {
 
 // ---------------------------------------------------------------------------
 
-class Tool {
+/**
+ * Tools made outside the kernel (0.7 MD.2: ModelCraft's mesh edit mode, mesh/edit-tool.js) join with registerTool(name,
+ * Class): Class extends Tool and gets the same pointer, key, value-box and Esc plumbing. The kernel stays flat (its copy in
+ * other apps carries no mesh editing).
+ */
+const EXTRA_TOOLS = new Map();
+export function registerTool(name, Cls) { if (typeof name !== 'string' || typeof Cls !== 'function') throw new Error('registerTool: name and class'); EXTRA_TOOLS.set(name, Cls); }   // i18n-ignore: a programmer's error
+export class Tool {
   constructor(T, name) { this.T = T; this.h = T.host; this.name = name; this.busy = false; }
   get hint() { return ''; }
   down() {} move() {} up() {} key() { return false; } value() { return false; } cancel() { this.busy = false; }
@@ -222,6 +250,8 @@ class Tool {
   /** A move/rotate/scale started from a key (grab, turn, resize) goes back to Select when it ends. */
   done() { if (this.modal) { this.modal = false; this.T.set('select'); } }
   marker(r) { return r ? { p: r.p, kind: r.kind } : null; }
+  /** What a live preview changes: only the open context's own definition (model.preview's scope). */
+  scope() { const c = this.h.model.context(this.h.path); return c ? [c.def.id] : null; }
 }
 
 /** Point-picking tools: press = a click, and a drag released away from the press = a second click. */
@@ -275,8 +305,12 @@ class SelectTool extends Tool {
     this.combine(s ? [s] : [], ev);
   }
   value(v) {
-    // 3x or /3 straight after a copy that ended back in Select (Ctrl+D, Shift+D)
-    if ((v.kind === 'array' || v.kind === 'divide') && this.T.lastCopy) return new MoveTool(this.T, 'move').value(v);
+    // 3x or /3 straight after a copy that ended back in Select (Ctrl+D, Shift+D) while the copy is still what is selected
+    const lc = this.T.lastCopy, copySel = lc && lc.sel === this.h.sel.map((x) => x.t + x.id).sort().join();
+    if ((v.kind === 'array' || v.kind === 'divide') && copySel) return new MoveTool(this.T, 'move').value(v);
+    // /n with an edge, an arc or a circle selected: divide it into n equal parts (0.7 MC-DIVIDE)
+    if (v.kind === 'divide' && this.T.divideSel(v.n)) return true;
+    if ((v.kind === 'array' || v.kind === 'divide') && lc) return new MoveTool(this.T, 'move').value(v);
     return this.T.resizeSel(v);
   }
   combine(found, ev) {
@@ -330,7 +364,7 @@ class LineTool extends ClickTool {
     const T = this.T, m = this.h.model;
     const before = T.ctx().def.faces.size;
     const a = T.local(this.start), b = T.local(p), hint = T.localDir(T.towardEye(p));
-    m.change(t('m3d.undo.line'), () => addEdge(T.ctx().def, a, b, { hint }));
+    m.change(t('m3d.undo.line'), () => addEdge(T.ctx().def, a, b, { hint }), [T.ctx().def.id]);
     const closed = T.ctx().def.faces.size > before;
     this.start = closed ? null : p;
     this.busy = !closed;
@@ -406,7 +440,7 @@ class RectTool extends ClickTool {
     const T = this.T;
     const pts = rectPts(this.p0, this.u, this.v, w, h).map((p) => T.local(p));
     const hint = T.localDir(this.onFace || Math.abs(dot(this.n, T.axes().z)) > 0.999 ? this.n : T.towardEye(this.p0));
-    this.h.model.change(t('m3d.undo.rectangle'), () => addPolygon(T.ctx().def, pts, hint));
+    this.h.model.change(t('m3d.undo.rectangle'), () => addPolygon(T.ctx().def, pts, hint), this.scope());
     this.reset();
     this.h.changed();
     this.h.overlay(null);
@@ -469,7 +503,7 @@ class CircleTool extends ClickTool {
     const T = this.T;
     const pts = ngonPts(this.c0, this.n, this.u, rad, this.sides).map((p) => T.local(p));
     const hint = T.localDir(this.onFace || Math.abs(dot(this.n, T.axes().z)) > 0.999 ? this.n : T.towardEye(this.c0));
-    this.h.model.change(this.name === 'circle' ? t('m3d.undo.circle') : t('m3d.undo.polygon'), () => { addPolygon(T.ctx().def, pts, hint); tagCurve(T.ctx().def, pts, this.name, true); });
+    this.h.model.change(this.name === 'circle' ? t('m3d.undo.circle') : t('m3d.undo.polygon'), () => { addPolygon(T.ctx().def, pts, hint); tagCurve(T.ctx().def, pts, this.name, true); }, this.scope());
     this.reset();
     this.h.changed();
     this.h.overlay(null);
@@ -511,7 +545,7 @@ function arcPlane(T, a, b, face) {
 function drawArc(T, pts, label) {
   const def = T.ctx().def, loc = pts.map((p) => T.local(p));
   const hint = T.localDir(T.towardEye(pts[0]));
-  T.host.model.change(label, () => { for (let i = 0; i + 1 < loc.length; i++) addEdge(def, loc[i], loc[i + 1], { hint }); tagCurve(def, loc, 'arc'); });
+  T.host.model.change(label, () => { for (let i = 0; i + 1 < loc.length; i++) addEdge(def, loc[i], loc[i + 1], { hint }); tagCurve(def, loc, 'arc'); }, [def.id]);
   T.host.changed();
 }
 /** 2-point arc: the two ends, then the bulge (how far the middle stands off the chord); typed: a bulge, or 12s for segments. */
@@ -741,7 +775,7 @@ class CurveTool extends ClickTool {
     const T = this.T, def = T.ctx().def, sp = def.splines.get(this.edit);
     const pts = sp.pts.map((q) => q.slice());
     pts[this.grab] = T.local(p);
-    try { this.h.model.change(t('m3d.tool.edit_curve'), () => editSpline(def, this.edit, pts)); } catch (err) { this.h.print(t('m3d.tool.curve_edit_failed', { error: err.message })); return; }
+    try { this.h.model.change(t('m3d.tool.edit_curve'), () => editSpline(def, this.edit, pts), [def.id]); } catch (err) { this.h.print(t('m3d.tool.curve_edit_failed', { error: err.message })); return; }
     this.grab = null; this.h.changed(); this.h.tip(this.hint);
     this.showGrips();
   }
@@ -750,7 +784,7 @@ class CurveTool extends ClickTool {
     if (this.edit) return false;
     if (this.pts.length < 2) { this.h.print(t('m3d.tool.click_two_points_or_more_for')); return false; }
     const T = this.T, def = T.ctx().def, pts = this.pts.map((p) => T.local(p));
-    this.h.model.change(t('m3d.undo.curve'), () => addSpline(def, pts, { closed, hint: T.localDir(T.towardEye(this.pts[0])) }));
+    this.h.model.change(t('m3d.undo.curve'), () => addSpline(def, pts, { closed, hint: T.localDir(T.towardEye(this.pts[0])) }), [def.id]);
     this.h.print(t(closed ? 'm3d.tool.curve_done_closed' : 'm3d.tool.curve_done', { n: pts.length }));
     this.pts = []; this.busy = false; this.h.changed(); this.h.overlay(null); this.h.tip(this.hint); this.h.vcb(t('m3d.vcb.length'), '');
     return true;
@@ -818,7 +852,7 @@ class FollowTool extends Tool {
   run(fid, pathEids) {
     const def = this.T.ctx().def;
     let r;
-    try { r = this.h.model.change(t('m3d.tool.follow_me'), () => followMe(def, fid, pathEids)); } catch (err) { this.h.print(t('m3d.tool.follow_failed', { error: err.message })); this.face = null; this.busy = false; return; }
+    try { r = this.h.model.change(t('m3d.tool.follow_me'), () => followMe(def, fid, pathEids), [def.id]); } catch (err) { this.h.print(t('m3d.tool.follow_failed', { error: err.message })); this.face = null; this.busy = false; return; }
     this.h.print(t(r.closed ? 'm3d.tool.follow_ring' : 'm3d.tool.follow_done', { n: pathEids.length, faces: r.faces.length }));
     this.h.setSel([]); this.path = []; this.face = null; this.busy = false;
     this.h.changed(); this.h.overlay(null); this.h.tip(this.hint);
@@ -935,7 +969,7 @@ class OffsetTool extends ClickTool {
     try {
       if (this.fid !== null) {
         const fid = this.fid;
-        this.h.model.change(t('m3d.undo.offset'), () => offsetFace(def, fid, d));
+        this.h.model.change(t('m3d.undo.offset'), () => offsetFace(def, fid, d), [def.id]);
       } else {
         const chain = this.chain, n = this.n;
         this.h.model.change(t('m3d.undo.offset'), () => {
@@ -992,7 +1026,7 @@ class PaintTool extends Tool {
       else if (ev.ctrl) fids = connected(def, [s]).filter((x) => x.t === 'f' && same(def.faces.get(x.id), col)).map((x) => x.id);
       else fids = [s.id];
     }
-    this.h.model.change(t('m3d.undo.paint'), () => { paintFaces(def, fids, c); for (const id of iids) paintInstance(def, id, c); });
+    this.h.model.change(t('m3d.undo.paint'), () => { paintFaces(def, fids, c); for (const id of iids) paintInstance(def, id, c); }, [def.id]);
     this.h.changed();
     const n = fids.length + iids.length;
     const what = fids.length && iids.length ? t('m3d.tool.paint_both', { faces: fids.length, groups: iids.length }) : fids.length ? t('m3d.tool.paint_faces', { n: fids.length }) : t('m3d.tool.paint_groups', { n: iids.length });
@@ -1012,7 +1046,7 @@ class PushTool extends ClickTool {
     this.lastEv = ev;
     if (this.fid === null) {
       const s = pick(this.h.scene(), this.h.cam, ev.x, ev.y, { path: this.h.path });
-      const f = s && s.t === 'f' ? this.h.scene().faces.find((x) => x.id === s.id && same(x.path, this.h.path)) : null;
+      const f = s && s.t === 'f' ? this.h.scene().face(this.h.path, s.id) : null;
       this.h.overlay(f ? { faces: f.tris, tip: t('m3d.tool.push_or_pull_this_face') } : null);
       return;
     }
@@ -1042,7 +1076,7 @@ class PushTool extends ClickTool {
       if (r.hit) { d = Math.sign(d) * len(r.delta); this.stopped = true; }
     }
     this.d = d;
-    const r = this.h.model.preview((m) => pushPull(m.context(this.h.path).def, this.fid, d * k));
+    const r = this.h.model.preview((m) => pushPull(m.context(this.h.path).def, this.fid, d * k), this.scope());
     if (r && r.ok) this.d = r.distance / k;
     this.h.changed();
     this.h.vcb(t('m3d.vcb.distance'), this.fmt(Math.abs(this.d)));
@@ -1054,7 +1088,7 @@ class PushTool extends ClickTool {
       const sc = this.h.scene();
       const s = pick(sc, this.h.cam, ev.x, ev.y, { path: this.h.path });
       if (!s || s.t !== 'f') { this.h.print(t('m3d.tool.push_pull_works_on_a_face')); return; }
-      const f = sc.faces.find((x) => x.id === s.id && same(x.path, this.h.path));
+      const f = sc.face(this.h.path, s.id);
       const ray = this.h.cam.ray(ev.x, ev.y), g = rayPlane(ray.o, ray.d, f.plane);
       this.fid = s.id;
       this.f0 = f;
@@ -1088,9 +1122,9 @@ class PushTool extends ClickTool {
     if (!s || s.t !== 'f') return;
     // the first click of the double-click may have started a push on the same face
     if (this.busy) { this.h.model.abort(); this.reset(); }
-    const f = this.h.scene().faces.find((x) => x.id === s.id && same(x.path, this.h.path));
+    const f = this.h.scene().face(this.h.path, s.id);
     const k = len(this.T.localDir(f.n)) || 1;
-    this.h.model.change(t('m3d.undo.push_pull'), (m) => pushPull(m.context(this.h.path).def, s.id, this.last.d * k));
+    this.h.model.change(t('m3d.undo.push_pull'), (m) => pushPull(m.context(this.h.path).def, s.id, this.last.d * k), this.scope());
     this.h.changed();
   }
   down(ev) {
@@ -1135,6 +1169,7 @@ function pushCollider(T, sc, fid) {
   return collider(sc, {
     moving: (o, t) => same(o.path, P) && (t === 'f' ? o.id === fid : faceE.has(o.id)),
     ignore: (o, t) => same(o.path, P) && (t === 'f' ? ownF.has(o.id) : ownE.has(o.id)),
+    whole: (path) => (same(path, P) ? null : 'static'),
   });
 }
 /** Move's collider: the selection travels; loose geometry stuck to it stretches, so it is left out. */
@@ -1143,7 +1178,7 @@ function moveCollider(T, sc, moving) {
   const loose = T.host.sel.filter((s) => s.t === 'e' || s.t === 'f');
   const stuck = loose.length ? connected(def, loose) : [];
   const sF = new Set(stuck.filter((s) => s.t === 'f').map((s) => s.id)), sE = new Set(stuck.filter((s) => s.t === 'e').map((s) => s.id));
-  return collider(sc, { moving, ignore: (o, t) => same(o.path, P) && (t === 'f' ? sF.has(o.id) : sE.has(o.id)) });
+  return collider(sc, { moving, ignore: (o, t) => same(o.path, P) && (t === 'f' ? sF.has(o.id) : sE.has(o.id)), whole: moving.whole });
 }
 
 // ---- move / copy ----
@@ -1159,13 +1194,17 @@ class MoveTool extends ClickTool {
     const def = this.T.ctx().def;
     const eids = new Set(), fids = new Set(), iids = new Set();
     for (const s of sel) (s.t === 'e' ? eids : s.t === 'f' ? fids : iids).add(s.id);
-    for (const fid of fids) { const f = def.faces.get(fid); if (f) for (const l of f.loops) for (let i = 0; i < l.length; i++) { const a = l[i], b = l[(i + 1) % l.length]; for (const [eid, e] of def.edges) if ((e.a === a && e.b === b) || (e.a === b && e.b === a)) eids.add(eid); } }
+    for (const fid of fids) { const f = def.faces.get(fid); if (f) for (const l of f.loops) for (let i = 0; i < l.length; i++) { const eid = edgeBetween(def, l[i], l[(i + 1) % l.length]); if (eid !== null) eids.add(eid); } }
     const P = this.h.path;
-    return (o, t) => {
+    const f = (o, t) => {
       if (o.path.length > P.length && same(o.path.slice(0, P.length), P)) return iids.has(o.path[P.length]);
       if (!same(o.path, P)) return false;
       return t === 'e' ? eids.has(o.id) : fids.has(o.id);
     };
+    // the same for a whole placement (collide.js): inside a selected one it all moves; only the open group's own
+    // geometry is asked item by item
+    f.whole = (path) => (path.length > P.length && same(path.slice(0, P.length), P) ? (iids.has(path[P.length]) ? 'moving' : 'static') : same(path, P) ? null : 'static');
+    return f;
   }
   hover(ev) {
     this.lastEv = ev;
@@ -1177,7 +1216,8 @@ class MoveTool extends ClickTool {
       this.h.overlay(o);
       return;
     }
-    const r = this.T.snap(ev, { from: this.p0, scene: this.sc0, skip: this.skip });
+    // a copy leaves the originals where they are, so their points snap like any other (D7: snap to the wall being copied)
+    const r = this.T.snap(ev, { from: this.p0, scene: this.sc0, skip: this.copy ? null : this.skip });
     this.lastDir = r.dir || null; this.lastKind = r.kind;
     this.apply(sub(r.p, this.p0));
     this.h.overlay({ lines: [{ a: this.p0, b: r.p, kind: r.kind }], marker: this.marker(r), tip: this.stopped ? t('m3d.tool.stopped_where_it_touches_2') : r.tip });
@@ -1193,7 +1233,7 @@ class MoveTool extends ClickTool {
       const s = copy ? copySel(def, sel) : sel;
       transformSel(def, s, translation(ld));
       return s;
-    });
+    }, this.scope());
     this.h.changed();
     this.h.vcb(t('m3d.vcb.distance'), this.fmt(len(delta)));
   }
@@ -1231,7 +1271,7 @@ class MoveTool extends ClickTool {
     if (len(this.delta) <= EPS) { this.h.model.abort(); this.reset(); this.h.changed(); this.done(); return; }
     const copy = this.copy, delta = this.delta, src = this.h.sel.filter((s) => s.t !== 'g' && s.t !== 'd' && s.t !== 's');
     this.h.model.commit(copy ? t('m3d.undo.copy') : t('m3d.undo.move'));
-    if (copy) { this.lastCopy = { delta, src }; this.h.setSel(this.result || []); } else this.lastCopy = null;
+    if (copy) { this.lastCopy = { delta, src, sel: (this.result || []).map((x) => x.t + x.id).sort().join() }; this.h.setSel(this.result || []); } else this.lastCopy = null;
     this.reset();
     this.h.overlay(null);
     this.h.changed();
@@ -1255,8 +1295,9 @@ class MoveTool extends ClickTool {
       return true;
     }
     if (this.lastCopy && (v.kind === 'array' || v.kind === 'divide')) {
-      const { delta, src } = this.lastCopy;
+      const { delta, src, rot } = this.lastCopy;
       const T = this.T, n = v.n;
+      const step = (f) => (rot ? rotation(T.localDir(rot.n), rot.a * f, T.local(rot.c)) : translation(T.localDir(mul(delta, f))));
       if (n < 1 || n > 500) return false;
       this.h.model.undo();
       const made = this.h.model.change(v.kind === 'array' ? 'Copy ×' + n : 'Copy /' + n, (m) => {
@@ -1264,11 +1305,11 @@ class MoveTool extends ClickTool {
         const out = [];
         for (let k = 1; k <= n; k++) {
           const s = copySel(def, src);
-          transformSel(def, s, translation(T.localDir(mul(delta, v.kind === 'array' ? k : k / n))));
+          transformSel(def, s, step(v.kind === 'array' ? k : k / n));
           out.push(...s);
         }
         return out;
-      });
+      }, this.scope());
       this.h.setSel(made);
       this.h.changed();
       return true;
@@ -1282,13 +1323,16 @@ class MoveTool extends ClickTool {
 class RotateTool extends ClickTool {
   constructor(...a) { super(...a); this.reset(); }
   get lockable() { return true; }
-  get hint() { return [t('m3d.tool.click_the_centre_of_rotation_on'), t('m3d.tool.click_a_point_to_start_the'), t('m3d.tool.click_to_set_the_angle_or')][this.stage]; }
+  get hint() {
+    const h = [t('m3d.tool.click_the_centre_of_rotation_on'), t('m3d.tool.click_a_point_to_start_the'), t('m3d.tool.click_to_set_the_angle_or')][this.stage];
+    return this.stage ? h + ' ' + t(this.copy ? 'm3d.tool.rotate_copy_on' : 'm3d.tool.rotate_copy_off') : h;
+  }
   get vcbLabel() { return t('m3d.vcb.angle'); }
-  reset() { this.stage = 0; this.busy = false; this.angle = 0; }
+  reset() { this.stage = 0; this.busy = false; this.angle = 0; this.copy = false; }
   axis(r) { return this.T.lock?.kind?.startsWith('axis') ? this.T.lock.dir : r && r.face && (r.kind === 'face' || r.kind === 'center') ? r.face.n : this.T.axes().z; }
   onPlane(ev) {
     const ray = this.h.cam.ray(ev.x, ev.y);
-    const r = this.T.snap(ev, { scene: this.sc0, skip: this.skip });
+    const r = this.T.snap(ev, { scene: this.sc0, skip: this.copy ? null : this.skip });
     let q = r.p;
     if (!['end', 'mid', 'edge', 'guidept', 'guide'].includes(r.kind)) { const g = rayPlane(ray.o, ray.d, planeFrom(this.n, this.c)); if (g) q = g.p; }
     return { r, q: sub(q, mul(this.n, dot(sub(q, this.c), this.n))) };
@@ -1322,8 +1366,13 @@ class RotateTool extends ClickTool {
   apply(a) {
     this.angle = a;
     const T = this.T, sel = this.h.sel.filter((s) => s.t !== 'g' && s.t !== 'd' && s.t !== 's');
-    const m4 = rotation(T.localDir(this.n), a, T.local(this.c));
-    this.h.model.preview((m) => transformSel(m.context(this.h.path).def, sel, m4));
+    const m4 = rotation(T.localDir(this.n), a, T.local(this.c)), copy = this.copy;
+    this.result = this.h.model.preview((m) => {
+      const def = m.context(this.h.path).def;
+      const s = copy ? copySel(def, sel) : sel;
+      transformSel(def, s, m4);
+      return s;
+    }, this.scope());
     this.h.changed();
     this.h.vcb(t('m3d.vcb.angle'), (a * 180 / Math.PI).toFixed(1));
   }
@@ -1337,6 +1386,7 @@ class RotateTool extends ClickTool {
       const r = this.cur || this.T.snap(ev);
       this.c = r.p;
       this.n = norm(this.axis(r));
+      this.copy = !!ev.ctrl || !!ev.alt;
       this.sc0 = this.h.scene();
       this.skip = new MoveTool(this.T, 'move').moving();
       this.stage = 1;
@@ -1382,14 +1432,29 @@ class RotateTool extends ClickTool {
     if (this.lastEv) this.hover(this.lastEv);
   }
   finish() {
-    if (Math.abs(this.angle) < 1e-9) { this.h.model.abort(); } else this.h.model.commit(t('m3d.undo.rotate'));
+    const copy = this.copy, angle = this.angle;
+    if (Math.abs(angle) < 1e-9) { this.h.model.abort(); }
+    else {
+      const src = this.h.sel.filter((s) => s.t !== 'g' && s.t !== 'd' && s.t !== 's');
+      this.h.model.commit(copy ? t('m3d.undo.copy') : t('m3d.undo.rotate'));
+      if (copy) {
+        this.T.lastCopy = { rot: { c: this.c, n: this.n, a: angle }, src, sel: (this.result || []).map((x) => x.t + x.id).sort().join() };
+        this.h.setSel(this.result || []);
+      } else this.T.lastCopy = null;
+    }
     this.reset();
     this.h.overlay(null);
     this.h.changed();
-    this.h.tip(this.hint);
+    this.h.tip(copy && Math.abs(angle) >= 1e-9 ? t('m3d.tool.rotated_copy_type_3x') : this.hint);
     this.done();
   }
+  key(k) {
+    if ((k === 'Control' || k === 'Alt') && this.stage) { this.copy = !this.copy; this.h.tip(this.hint); if (this.stage === 2 && this.lastEv) this.hover(this.lastEv); return true; }
+    return false;
+  }
   value(v) {
+    // 3x or /3 straight after a rotated copy: more copies around the same centre
+    if (this.stage === 0 && this.T.lastCopy?.rot && (v.kind === 'array' || v.kind === 'divide')) return new MoveTool(this.T, 'move').value(v);
     if (this.stage !== 2) return false;
     const deg = v.kind === 'num' ? v.v : v.kind === 'len' && v.num !== null ? v.num : null;
     if (deg === null) return false;
@@ -1457,7 +1522,7 @@ class ScaleTool extends ClickTool {
     const S = [fs[0], 0, 0, 0, 0, fs[1], 0, 0, 0, 0, fs[2], 0, 0, 0, 0, 1];
     const m4 = mmul(translation(a), mmul(S, translation(mul(a, -1))));
     this.fs = fs;
-    this.h.model.preview((m) => transformSel(m.context(this.h.path).def, sel, m4));
+    this.h.model.preview((m) => transformSel(m.context(this.h.path).def, sel, m4), this.scope());
     this.h.changed();
     this.h.vcb(t('m3d.vcb.scale'), fs.map((x) => String(+x.toFixed(4))).join(', '));
   }
@@ -1498,7 +1563,7 @@ class ScaleTool extends ClickTool {
     this.f = f;
     const T = this.T, sel = this.h.sel.filter((s) => s.t !== 'g' && s.t !== 'd' && s.t !== 's');
     const m4 = scaling(f, T.local(this.base));
-    this.h.model.preview((m) => transformSel(m.context(this.h.path).def, sel, m4));
+    this.h.model.preview((m) => transformSel(m.context(this.h.path).def, sel, m4), this.scope());
     this.h.changed();
     this.h.vcb(t('m3d.vcb.scale'), String(+f.toFixed(4)));
   }
@@ -1627,11 +1692,94 @@ class EraseTool extends Tool {
       for (const s of items) if (s.t === 's') m.deleteSection(s.id);
       removeLooseVerts(def);
       m.purge();
-    });
+    }, this.scope());
     this.h.setSel([]);
     this.h.changed();
   }
   cancel() { this.busy = false; this.items = new Map(); }
+}
+
+// ---- divide (0.7 MC-DIVIDE): an edge or a curve into equal parts ----
+const DIVIDE_HOVER_MAX = 100;   // the most parts moving the pointer gives (typing goes to DIVIDE_MAX)
+/**
+ * Divide: the edge or curve selected when the tool starts, else the one under the pointer. Moving along it sets how
+ * many parts (two in the middle, more toward an end); the new corners show as marks. A click divides; typing a number
+ * (5, 5s or /5) divides at once. One undo step; then Select, with the pieces selected. A curve divides as a whole.
+ */
+class DivideTool extends Tool {
+  constructor(T, name) {
+    super(T, name);
+    this.target = null; this.n = 2; this.fromSel = false;
+    const w = this.T.divideTarget();
+    if (w) { this.target = w; this.fromSel = true; }
+  }
+  get hint() { return this.target ? t('m3d.tool.divide_move', { n: this.n }) : t('m3d.tool.divide_pick'); }
+  get vcbLabel() { return t('m3d.vcb.parts'); }
+  whatOf(eid) { const e = this.T.ctx().def.edges.get(eid); return !e ? null : e.curve ? { curve: e.curve, edge: eid } : { edge: eid }; }
+  same(a, b) { return !!a && !!b && (a.curve ? a.curve === b.curve : a.edge === b.edge); }
+  /** How many parts the pointer asks for: by where its point on the target lies along it. */
+  countAt(ev, plan) {
+    const r = this.T.snap(ev), ctx = this.T.ctx(), def = ctx.def;
+    const chain = this.target.curve ? (dividePlan(def, this.target, 2)?.curve?.verts || []) : [def.edges.get(this.target.edge).a, def.edges.get(this.target.edge).b];
+    if (chain.length < 2 || !plan) return this.n;
+    const P = chain.map((v) => apply(ctx.m, def.verts.get(v)));
+    let best = Infinity, at = 0, s0 = 0;
+    for (let i = 0; i + 1 < P.length; i++) {
+      const u = sub(P[i + 1], P[i]), L = len(u), k = L ? Math.max(0, Math.min(1, dot(sub(r.p, P[i]), u) / (L * L))) : 0;
+      const d = dist(add(P[i], mul(u, k)), r.p);
+      if (d < best) { best = d; at = s0 + k * L; }
+      s0 += L;
+    }
+    const near = Math.max(Math.min(at, s0 - at), s0 / (2 * DIVIDE_HOVER_MAX));
+    return Math.max(2, Math.min(DIVIDE_HOVER_MAX, Math.round(s0 / (2 * near)) + 1));
+  }
+  move(ev) {
+    if (!this.fromSel) {
+      const s = this.T.pickAt(ev);
+      const w = s && s.t === 'e' ? this.whatOf(s.id) : null;
+      if (!this.same(w, this.target)) { this.target = w; }
+    }
+    this.lastEv = ev;
+    this.show(ev);
+  }
+  show(ev) {
+    if (!this.target) { this.h.overlay(null); this.h.tip(this.hint); return; }
+    const ctx = this.T.ctx();
+    let plan = null;
+    try { plan = dividePlan(ctx.def, this.target, 2); } catch { plan = null; }
+    if (!plan) { this.target = null; this.h.overlay(null); return; }
+    if (ev) this.n = this.countAt(ev, plan);
+    const p = dividePlan(ctx.def, this.target, this.n);
+    const W = p.points.map((q) => apply(ctx.m, q));
+    const lines = p.resegment ? W.slice(0, -1).map((a, i) => ({ a, b: W[i + 1], kind: 'axis', dash: true })).concat(p.curve.closed ? [{ a: W[W.length - 1], b: W[0], kind: 'axis', dash: true }] : []) : [];
+    this.h.overlay({ hover: { t: 'e', id: this.target.edge }, points: p.resegment ? W.slice(1, p.curve.closed ? W.length : -1) : W, lines, tip: t('m3d.tool.divide_parts', { n: this.n, len: this.fmt(p.length / this.n) }) });
+    this.h.vcb(t('m3d.vcb.parts'), String(this.n));
+    this.h.tip(this.hint);
+  }
+  down() { this.busy = true; }
+  up(ev) {
+    if (!this.busy) return;
+    this.busy = false;
+    if (!this.target) { const s = this.T.pickAt(ev); if (s && s.t === 'e') { this.target = this.whatOf(s.id); this.show(ev); } return; }
+    this.apply(this.n);
+  }
+  value(v) {
+    const n = v.kind === 'sides' || v.kind === 'divide' || v.kind === 'array' ? v.n : v.kind === 'num' ? v.v : v.kind === 'len' ? v.num : null;
+    if (!Number.isInteger(n) || n < 2) { this.h.print(t('m3d.model.divide_count', { max: DIVIDE_MAX })); return true; }
+    if (!this.target) { this.h.print(t('m3d.tool.divide_need')); return true; }
+    this.apply(n);
+    return true;
+  }
+  apply(n) {
+    const w = this.target;
+    let r;
+    try { r = this.h.model.change(t('m3d.undo.divide'), (m) => divideEdges(m.context(this.h.path).def, w, n), this.scope()); } catch (err) { this.h.print(err.message); return; }
+    this.h.print(t('m3d.tool.divided', { n }));
+    this.T.set('select');
+    this.h.setSel(r.edges.map((id) => ({ t: 'e', id })));
+    this.h.changed();
+  }
+  cancel() { this.busy = false; this.h.overlay?.(null); }
 }
 
 // ---- tape measure ----
@@ -1684,12 +1832,12 @@ class TapeTool extends ClickTool {
     if (this.mode === 'line') {
       if (len(this.w) <= EPS) return;
       const p = add(this.p0, this.w), dir = this.dir;
-      m.change(t('m3d.tool.guide_line'), (mm) => mm.addGuideLine(p, dir));
+      m.change(t('m3d.tool.guide_line'), (mm) => mm.addGuideLine(p, dir), []);
       this.h.print(t('m3d.tool.guide_from_edge', { d: this.fmt(len(this.w)) }));
     } else {
       if (!this.q || dist(this.q, this.p0) <= EPS) return;
       const q = this.q;
-      m.change(t('m3d.tool.guide_point'), (mm) => mm.addGuidePoint(q));
+      m.change(t('m3d.tool.guide_point'), (mm) => mm.addGuidePoint(q), []);
       this.h.print('Measured ' + this.fmt(dist(this.p0, q)) + '.');
     }
     this.reset();
@@ -1778,7 +1926,7 @@ class ProtractorTool extends ClickTool {
   }
   make(a) {
     const d = this.dirAt(a), c = this.c;
-    this.h.model.change(t('m3d.tool.guide_line'), (mm) => mm.addGuideLine(c, d));
+    this.h.model.change(t('m3d.tool.guide_line'), (mm) => mm.addGuideLine(c, d), []);
     this.h.print(t('m3d.tool.guide_at_angle', { a: Math.round((a * 180) / Math.PI * 100) / 100 }));
     this.reset(); this.h.overlay(null); this.h.changed(); this.h.tip(this.hint);
   }
@@ -1927,20 +2075,20 @@ class DimTool extends ClickTool {
   }
   make() {
     const { pa, pb, off } = this, P = this.h.path;
-    const id = this.h.model.change(t('m3d.undo.dimension'), (m) => m.addDim(pa, pb, off, P));
+    const id = this.h.model.change(t('m3d.undo.dimension'), (m) => m.addDim(pa, pb, off, P), []);
     const dm = this.h.model.dims.get(id);
     this.h.print(t(dm.a.path && dm.b.path ? 'm3d.tool.dim_made' : 'm3d.tool.dim_made_free', { len: this.fmt(dist(pa, pb)) }));
     this.done(id);
   }
   makeRadial() {
     const { path, cid, kind, g } = this.rad, off = this.off;
-    const id = this.h.model.change(t(kind === 'dia' ? 'm3d.undo.dim_dia' : 'm3d.undo.dim_rad'), (m) => m.addRadialDim(path, cid, off, kind));
+    const id = this.h.model.change(t(kind === 'dia' ? 'm3d.undo.dim_dia' : 'm3d.undo.dim_rad'), (m) => m.addRadialDim(path, cid, off, kind), []);
     this.h.print(t(g.flat ? (kind === 'dia' ? 'm3d.tool.dim_made_dia' : 'm3d.tool.dim_made_rad') : (kind === 'dia' ? 'm3d.tool.dim_made_dia_fixed' : 'm3d.tool.dim_made_rad_fixed'), { len: this.fmt(kind === 'dia' ? 2 * g.r : g.r) }));
     this.done(id);
   }
   makeAngle() {
     const { o, a, b } = this.ang, off = this.off, P = this.h.path;
-    const id = this.h.model.change(t('m3d.undo.dim_angle'), (m) => m.addAngleDim(o, a, b, off, P));
+    const id = this.h.model.change(t('m3d.undo.dim_angle'), (m) => m.addAngleDim(o, a, b, off, P), []);
     const l = angleLayout(this.h.model.dimEnds(this.h.model.dims.get(id)), off, this.h.cam);
     this.h.print(t('m3d.tool.dim_made_angle', { deg: formatDeg((l.L * 180) / Math.PI) }));
     this.done(id);
@@ -1970,7 +2118,7 @@ class DimTool extends ClickTool {
       if (!(v.v > 0)) { this.h.print(t('m3d.tool.type_a_length_above_zero')); return false; }
       const id = this.last, kind = this.h.model.dims.get(id).kind;
       if (kind === 'ang') { this.h.print(t('m3d.model.dim_angle_only')); return true; }
-      try { this.h.model.change(t('m3d.tool.dimension_length'), (m) => m.setDimLength(id, v.v)); }
+      try { this.h.model.change(t('m3d.tool.dimension_length'), (m) => m.setDimLength(id, v.v), this.h.model.dimScope(id)); }
       catch (err) { this.h.print(err.message); return true; }
       this.h.print(t(kind === 'rad' ? 'm3d.tool.rad_set' : kind === 'dia' ? 'm3d.tool.dia_set' : 'm3d.tool.dim_set', { len: this.fmt(v.v) }));
       this.h.changed();
@@ -2055,7 +2203,7 @@ class SculptTool extends Tool {
     this.h.model.change(t('m3d.undo.sculpt'), (m) => {
       const def = m.context(this.h.path).def;
       for (const b of d.pts) { const q = def.verts.get(b.v); if (q) def.verts.set(b.v, [q[0], q[1], b.z + b.w * dz]); }
-    });
+    }, this.scope());
     this.h.print(t(dz >= 0 ? 'm3d.tool.sculpt_raised' : 'm3d.tool.sculpt_lowered', { h: this.fmt(Math.abs(dz)), r: this.fmt(this.radius) }));
     this.pending = null;
     this.h.changed();
@@ -2102,7 +2250,7 @@ class AxesTool extends ClickTool {
     if (this.pts.length < 3) { this.h.tip(this.hint); return; }
     const [o, px, py] = this.pts;
     this.pts = []; this.busy = false;
-    try { this.h.model.change(t('m3d.undo.axes'), (m) => m.setAxes(o, sub(px, o), sub(py, o))); }
+    try { this.h.model.change(t('m3d.undo.axes'), (m) => m.setAxes(o, sub(px, o), sub(py, o)), []); }
     catch (err) { this.h.print(err.message); this.h.tip(this.hint); return; }
     this.h.print(t('m3d.tool.axes_done'));
     this.h.overlay(null);
@@ -2134,7 +2282,7 @@ class SectionTool extends ClickTool {
   }
   pickPoint(ev) {
     const pl = this.plane(ev);
-    const id = this.h.model.change(t('m3d.undo.section'), (m) => m.addSection(pl.p, pl.n));
+    const id = this.h.model.change(t('m3d.undo.section'), (m) => m.addSection(pl.p, pl.n), []);
     this.h.print(t('m3d.tool.section_placed', { name: this.h.model.sections.get(id).name }));
     this.h.overlay(null);
     this.T.set('select');
@@ -2219,7 +2367,7 @@ class PlaceTool extends ClickTool {
       const [fx, fy, fz] = this.frameAt(r).map((v) => norm(T.localDir(v)));
       M = [fx[0], fx[1], fx[2], 0, fy[0], fy[1], fy[2], 0, fz[0], fz[1], fz[2], 0, p[0], p[1], p[2], 1];
     }
-    const iid = this.h.model.change(t('m3d.tool.place_component'), (m) => m.place(m.context(this.h.path).def, this.defId, M));
+    const iid = this.h.model.change(t('m3d.tool.place_component'), (m) => m.place(m.context(this.h.path).def, this.defId, M), this.scope());
     this.h.setSel([{ t: 'i', id: iid }]);
     this.h.changed();
     this.T.set('select');
@@ -2260,7 +2408,7 @@ class LightTool extends ClickTool {
       const s = this.spot(r);
       L = { ...this.o, p: s.p, dir: this.o.kind === 'area' ? (s.n || [0, 0, -1]) : [0, 0, -1] };
     }
-    const id = this.h.model.change(t('m3d.undo.light'), (m) => m.addLight(L));
+    const id = this.h.model.change(t('m3d.undo.light'), (m) => m.addLight(L), []);
     this.at = null; this.busy = false;
     this.h.changed();
     this.h.lightPlaced?.(id);
@@ -2290,7 +2438,7 @@ class PasteTool extends ClickTool {
     const r = this.cur || this.T.snap(ev);
     const m = this.placement(r.p), clip = this.clip, P = this.h.path;
     let made;
-    try { made = this.h.model.change(t('m3d.undo.paste'), (mm) => mm.pasteClip(P, clip, m)); } catch (err) { this.h.print(t('m3d.tool.paste_failed', { error: err.message })); this.T.set('select'); return; }
+    try { made = this.h.model.change(t('m3d.undo.paste'), (mm) => mm.pasteClip(P, clip, m), [this.h.model.context(P).def.id]); } catch (err) { this.h.print(t('m3d.tool.paste_failed', { error: err.message })); this.T.set('select'); return; }
     this.h.setSel(made || []);
     this.h.changed();
     this.h.print('Pasted.');

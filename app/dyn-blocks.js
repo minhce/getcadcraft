@@ -11,7 +11,8 @@
  *       entity's handle), shown: [bool…], all: [[entities]…] (what each file entity became; [] when CadCraft has no such
  *       object, and for an ATTDEF), ad: [file index of each of block.attdefs], def?: true, of?: '<definition block name>',
  *     params?: [{ node, kind, name }] (definitions), vis?: { node, name, label, point, param ('HEX': the BLOCKVISIBILITYPARAMETER),
- *       states: [{ name, show: [index…], src? (the state's name in the file when renamed or made in the editor) }] },
+ *       states: [{ name, show: [index…], src? (the state's name in the file when renamed or made in the editor) }],
+ *       free?: [index…] (objects the parameter does not list: no state shows or hides them) },
  *     visEdited?: true (the states were edited in the block editor, visedit.js)
  *   }
  *   block.entities = the entities shown (all[i] where shown[i]), so drawing, picking and bounds see only those
@@ -64,6 +65,8 @@ export function dynBlockFromDwg(b, { convert, attdefOf, defName, record }) {
         point: v.point && Number.isFinite(v.point.x) && Number.isFinite(v.point.y) ? { x: v.point.x, y: v.point.y } : null,
         states: v.states.slice(0, MAX.states).map((s) => ({ name: cleanName(s.name), show: s.entities.map((x) => at.get(hexKey(x))).filter((i) => i !== undefined) })),
       };
+      // objects the parameter does not list (its list of every entity) are not under it: they keep their own flag
+      if (Array.isArray(v.all)) { const listed = new Set(v.all.map(hexKey)); const free = h.map((x, i) => (listed.has(x) ? -1 : i)).filter((i) => i >= 0); if (free.length) dyn.vis.free = free; }
     }
   }
   if (b.dynamicOf && defName) dyn.of = defName;
@@ -279,6 +282,27 @@ export function visibilityOf(doc, ref) {
   return { label: vis.label || vis.name, states: vis.states.map((s) => s.name), current: ref.dyn?.state ?? null, def: def.name };
 }
 
+/**
+ * The file objects of a dynamic definition that no visibility state shows or hides (`dyn.vis.free`; for a drawing opened
+ * before that was kept: the attribute definitions no state lists). Everything else — attribute definitions included
+ * (0.6.1 FIX-061-DYN-ATTRS) — is shown exactly when the state lists it. → Set of file indices
+ */
+export function freeObjects(d) {
+  const vis = d && d.vis;
+  if (!vis) return new Set();
+  if (Array.isArray(vis.free)) return new Set(vis.free);
+  const listed = new Set(vis.states.flatMap((s) => s.show));
+  return new Set((d.ad || []).filter((i) => !listed.has(i)));
+}
+
+/** A state's shown flags for a block with `n` file objects; free objects keep `keep`'s flag (a block's dyn.shown). */
+export function stateFlags(def, st, n, keep) {
+  const shown = Array.from({ length: n }, () => false);
+  for (const i of st.show) if (i >= 0 && i < n) shown[i] = true;
+  for (const i of freeObjects(def.dyn)) if (i < n) shown[i] = !!keep?.[i];
+  return shown;
+}
+
 const plain = (x) => JSON.stringify(x, (k, v) => (k === 'id' ? undefined : v));
 const sameGeometry = (a, b) => a.length === b.length && a.every((parts, i) => plain(parts) === plain(b[i]));
 
@@ -298,9 +322,9 @@ export function setVisibility(doc, id, state, map = doc.entities) {
   const B = doc.blocks.get(ref.block);
   const G = dynEntities(B);   // the reference's own geometry (a copy may have been stretched): hidden ones too
   if (!G) return { error: 'changed' };
-  const shown = G.map(() => false);
-  for (const i of st.show) if (i >= 0 && i < shown.length) shown[i] = true;
-  for (const i of B.dyn.ad || []) shown[i] = !!B.dyn.shown[i];   // attribute definitions stay as they are
+  // the state's objects, its attribute definitions too (FIX-061-DYN-ATTRS: they stayed as they were, so the attributes
+  // shown were the old state's); the reference keeps every value, so an attribute shown again shows its value
+  const shown = stateFlags(def, st, G.length, B.dyn.shown);
   let target = null;
   for (const X of doc.blocks.values()) {
     if (!X.dyn || !(X === def || X.dyn.of === def.name)) continue;

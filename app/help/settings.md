@@ -1,9 +1,9 @@
 ---
 title: CadCraft settings
-summary: The settings that belong to the drafting app: cursor size, where a pasted copy hangs from the cursor, what a click does to the selection, and the corner indicator.
+summary: The settings that belong to the drafting app: cursor size, where a pasted copy hangs from the cursor, what a click does to the selection, how many rows the toolbar uses, and the corner indicator.
 section: reference
 order: 5
-keywords: settings, preferences, options, corner indicator, view cube, axis icon, ucs icon, cursor, crosshair, pick box, paste point, base point, clicking objects, selection, pickadd, shift, reset
+keywords: toolbar rows, toolbar display, ctrl f1, settings, preferences, options, corner indicator, view cube, axis icon, ucs icon, cursor, crosshair, pick box, paste point, base point, clicking objects, selection, pickadd, shift, reset
 ---
 
 Open {{ui:Settings}} with the gear in the app bar or {{key:Mod+,}}. The first tab, {{ui:CadCraft}}, holds the settings that belong to this app; {{ui:General}} holds the ones every app in the family shares (theme, panel text size and widths, the toolbar's look and order). CadCraft's settings exist only in the app: you change them here, and this browser remembers them. {{ui:Reset CadCraft settings}} puts every one back to the start.
@@ -54,6 +54,22 @@ What pressing on an empty spot and dragging does in {{cmd:TRIM}} and {{cmd:EXTEN
 - **A window**: a box; every piece it touches is trimmed, as the `C` option does.
 
 See [Trim and extend](topic:trim-and-extend).
+
+## Toolbar position
+
+{{ui:CadCraft}} › {{ui:Toolbar position}}: **Top** (the start, how it has always been), **Bottom**, **Left** or **Right**. On the left or the right the tool groups stack in a column that scrolls when it is taller than the window, and the buttons wrap two or three to a line. The choice is saved with your settings, and {{cmd:TOOLBARDOCK}} (`TBDOCK`) sets it from the command line. {{ui:General}} › {{ui:Reset the layout}} puts the toolbar back on top.
+
+The menu styles' bars sit inside the toolbar and move with it, but the {{ui:Ribbon}} style is made to run across the top or the bottom: on a side it gets a narrow column that scrolls. On a phone the toolbar stays where the phone layout puts it.
+
+## Toolbar rows
+
+How many lines the tools use above the drawing, in the CadCraft toolbar and in the {{ui:Drafting classic}} and {{ui:Ribbon}} styles:
+
+- **Wrap to fit** (the start): the tools wrap to the width of the window.
+- **2 rows**: at most two lines. When the tools wrap to two lines or fewer at this width they just wrap; otherwise they sit in two rows that scroll sideways.
+- **1 row**: one line that scrolls sideways, which leaves the drawing the most room.
+
+{{key:Shift+Ctrl+F1}} steps through the three, and {{cmd:TOOLBARROWS}} sets one. What the buttons show (icons and text, just icons, or just text) is a setting of {{ui:General}} › {{ui:Toolbar}}; {{key:Ctrl+F1}} steps through it and {{cmd:TOOLBAR}} sets it.
 
 ## Corner indicator
 

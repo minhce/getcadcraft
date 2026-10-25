@@ -10,7 +10,7 @@ keywords: problem, error, not working, message, cannot open, unknown command, no
 
 | Message or symptom | Cause | Fix |
 |---|---|---|
-| "CadCraft opens DWG and DXF drawings. "…" is neither." | The file is not a `.dwg` or `.dxf`. | Open the drawing file itself. PDFs and images cannot be opened. |
+| "CadCraft opens DWG and DXF drawings. "…" is neither." | The file is not a `.dwg` or `.dxf`. | Open the drawing file itself. A PDF can be brought in (Open asks: import or attach, see [PDF underlays](topic:pdf-underlay)); pictures go in with `IMAGEATTACH`. |
 | "This is a binary DXF. Save it as ASCII DXF (or open the DWG) and try again." | Binary DXF is not read. | Ask for a text (ASCII) DXF, or the DWG. |
 | "This file is not a readable DXF (bad group code on line …)." | The DXF is damaged or not really a DXF. | Ask for the file again, or for a DWG. |
 | "This drawing could not be read. It may be damaged, or saved in a version the reader does not handle yet (…)." | The DWG reader could not read it. | Ask for the DWG saved in an older version, or a DXF. |
@@ -60,7 +60,6 @@ keywords: problem, error, not working, message, cannot open, unknown command, no
 | "Only polylines, block references and dimensions explode." | The selection had nothing to explode. | Select a polyline, block reference or dimension. |
 | "That is the current layer. Make another layer current first." | You tried to turn off the current layer. | Click another layer's name, then turn this one off. |
 | "There is already a layer called …" | Layer names must be unique. | Choose another name. |
-| Undo did not undo a layer change | Layer settings are not undone. | Change the setting back by hand. |
 | "Nothing to undo." | There is nothing left to undo, or you opened or started a drawing (that clears the history). | — |
 
 ## Dimensions and blocks
@@ -88,7 +87,7 @@ keywords: problem, error, not working, message, cannot open, unknown command, no
 | "Pick the window to plot." | {{ui:A window…}} is chosen and no window was picked. | Click {{ui:Pick}} and pick two corners. |
 | "… bigger than the paper: the edges are cut off." | The area does not fit at that scale. | Choose a smaller scale, a larger paper, or {{ui:Fit to paper}}. |
 | "The browser blocked the new tab, so the PDF was downloaded instead." | Pop-ups are blocked for the site. | Open the downloaded PDF, or allow pop-ups for the site. |
-| Characters print as "?" | The PDF font has Western European characters only. | Not built yet for other scripts. |
+| Characters print as "?" | The PDF's fonts have no letter for them (Arabic, Hebrew, rare ideographs, …), or the CJK font could not be fetched (offline). European scripts, Cyrillic, Greek, Chinese, Japanese and Korean print as themselves. | For Chinese, Japanese or Korean, plot again with a connection. Other scripts are not built yet. |
 | Construction lines show in the PDF | Their layer plots. | Click the layer's printer button. |
 | All lines are equally thick | Their lineweight is {{ui:Default}}, so they print at the dialog's pen width. | Give the layers or objects a {{ui:Lineweight}} in the right panel, or choose a {{ui:Line weight}} in the dialog. To see lineweights on screen, press {{ui:LWT}} in the status bar. |
 
@@ -102,7 +101,7 @@ keywords: problem, error, not working, message, cannot open, unknown command, no
 | {{key:Mod+A}} selected the command line's text | The command line had the cursor. | Click an object first, or type `ALL` at a `Select objects` prompt. |
 | {{key:Delete}} does not erase | The command line had the cursor. | Type `E` and press {{key:Enter}}. |
 | Right-click does nothing on a Mac trackpad | Control-click may count as an ordinary click. | Click with two fingers. |
-| Nothing pans on a trackpad | There is no middle button, and Space does not pan. | Drag with a right-click held, or zoom out and in at another spot. |
+| Nothing pans on a trackpad | There is no middle button, and Space does not pan. | Swipe with two fingers: the 2D view pans (pinch and the mouse wheel zoom). Or drag with a right-click held. |
 | The first {{key:Esc}} left full screen | The browser uses Esc to leave full screen. | Press {{key:Esc}} again to cancel the command. |
 | {{key:F1}} does nothing on a Mac | F1 is a brightness key. | Hold **fn**, or click {{ui:Help}}. |
 | Typing goes into the help's search box | The help panel has the cursor. | Click on the drawing. |

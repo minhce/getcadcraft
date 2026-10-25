@@ -23,8 +23,10 @@ import { decodeSource, balanced } from './lisp/reader.js';
 import { applyAliases, exportPgp, parseAliases, STORE_KEY as ALIAS_KEY, TEMPLATE } from './aliases.js';
 import { t } from './i18n.js';
 import { readLength, readNumber } from './units.js';
+import { bridgeFolder, readSupportFiles, SUPPORT_NAMES } from './lisp/support.js';
 
 const STARTUP_KEY = 'cadcraft.lisp.startup';
+const SUPPORT_KEY = 'cadcraft.lisp.support';   // Studio: the support folder acad.lsp / acaddoc.lsp are read from (0.7 D7.28)
 const HISTORY_KEY = 'cadcraft.lisp.history';
 const MAX_FILE = 2 * 1024 * 1024;     // one application's text
 const MAX_STORED = 4 * 1024 * 1024;   // all stored texts together (localStorage is small)
@@ -102,7 +104,21 @@ export function installLispUi({ root, engine, host, print, ask, focusCommandLine
       else say(t('appload.failed', { name: f.name, error: res.error || '' }));
     }
   }
-  const runLoad = (files) => ctx.runHidden(engine, '_LISPLOAD', 'APPLOAD', { kind: 'load', files, done: (f, res) => { if (res.ok && !f.startup) remember(f); } });
+  const runLoad = (files, o = {}) => ctx.runHidden(engine, '_LISPLOAD', 'APPLOAD', { kind: 'load', files, startup: !!o.startup, done: (f, res) => { if (res.ok && !f.startup) remember(f); } });
+
+  // ---- acad.lsp / acaddoc.lsp from a support folder (Studio only; a browser page cannot keep a folder: it has the Startup Suite) ----
+  const bridge = () => { const b = window.cadcraftDesktop; return b && typeof b.openFolderDialog === 'function' && typeof b.listDir === 'function' && typeof b.readFile === 'function' ? b : null; };
+  const supportPath = () => (bridge() ? String(store.get(SUPPORT_KEY, '') || '') : '');
+  /** Read the named support files and load them (then S::STARTUP). Said on the command line; nothing happens without a folder. */
+  async function loadSupport(names, say = print) {
+    const path = supportPath();
+    if (!path) return 0;
+    const r = await readSupportFiles(bridgeFolder(bridge(), path), names);
+    for (const n of r.notes) say(t(n.why === 'size' ? 'appload.support.size' : 'appload.support.read', { name: n.name || path }));
+    if (r.files.length) await runLoad(r.files, { startup: true });
+    return r.files.length;
+  }
+  host.onNewDrawing = () => (supportPath() ? loadSupport(['acaddoc.lsp']) : null);
 
   // ---- APPLOAD ----
   host.appload = ({ c }) => new Promise((done) => {
@@ -141,12 +157,24 @@ export function installLispUi({ root, engine, host, print, ask, focusCommandLine
       if (!files.length) return;
       try { await host.addons.installPackage(files); say(t('appload.addon.done')); } catch (err) { say(t('appload.addon.failed', { error: err.message })); }
     }) }, t('appload.addon')) : null;
+    const supportBox = bridge() ? (() => {
+      const where = el('span', { className: 'cc-al-meta', 'data-al-support-path': '' });
+      const show = () => { where.textContent = supportPath() || t('appload.support.none'); };
+      show();
+      return el('div', { className: 'cc-al-support', 'data-al-support': '' },
+        el('h3', { className: 'cc-al-h' }, t('appload.support.title')), el('p', { className: 'cc-note' }, t('appload.support.note', { files: SUPPORT_NAMES.join(', ') })),
+        el('div', { className: 'cc-al-actions' }, where,
+          btn(t('appload.support.choose'), async () => { const p = await bridge().openFolderDialog({ title: t('appload.support.title') }); if (p) { store.set(SUPPORT_KEY, p); show(); say(t('appload.support.set', { path: p })); } }, { dataset: { alSupportChoose: '' } }),
+          btn(t('appload.support.load'), async () => { if (!supportPath()) { say(t('appload.support.none')); return; } const n = await loadSupport(SUPPORT_NAMES, say); if (!n) say(t('appload.support.nofiles', { files: SUPPORT_NAMES.join(', ') })); }, { dataset: { alSupportLoad: '' } }),
+          btn(t('appload.support.clear'), () => { store.set(SUPPORT_KEY, ''); show(); say(t('appload.support.cleared')); }, { dataset: { alSupportClear: '' } })));
+    })() : null;
     const dlg = el('dialog', { className: 'cc-dialog cc-appload', 'aria-labelledby': 'cc-al-h' },
       el('div', { className: 'cc-plot-head' }, el('h2', { className: 'cc-h', id: 'cc-al-h' }, t('appload.title'))),
       el('div', { className: 'cc-al-body' },
         el('div', { className: 'cc-al-actions' }, loadBtn, addonBtn, el('span', { className: 'cc-note' }, t('appload.drop'))),
         msg,
         el('h3', { className: 'cc-al-h' }, t('appload.loaded.title')), loadedList,
+        supportBox,
         el('h3', { className: 'cc-al-h' }, t('appload.startup.title')), el('p', { className: 'cc-note' }, t('appload.startup.note')), startupList,
         el('h3', { className: 'cc-al-h' }, t('appload.history.title')), historyList,
         el('details', { className: 'cc-al-refused' }, el('summary', {}, t('appload.refused.title')), el('p', { className: 'cc-note' }, t('appload.refused.text')))),
@@ -278,7 +306,11 @@ export function installLispUi({ root, engine, host, print, ask, focusCommandLine
   const aliasText = store.text(ALIAS_KEY);
   if (aliasText) { const r = applyAliases(ctx, aliasText); if (r.errors.length) print(t('aliases.start.errors', { n: r.errors.length })); }
   const su = startup();
-  if (su.length) setTimeout(() => { if (!engine.busy) runLoad(su.map((f) => ({ ...f, startup: true }))); }, 0);
+  if (su.length || supportPath()) setTimeout(async () => {
+    if (engine.busy) return;
+    await loadSupport(SUPPORT_NAMES);   // acad.lsp, acaddoc.lsp, then the Startup Suite
+    if (su.length) await runLoad(su.map((f) => ({ ...f, startup: true })), { startup: true });
+  }, 0);
   window.cadcraft && (window.cadcraft.lisp = session);
   return session;
 }

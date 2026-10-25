@@ -95,6 +95,32 @@
   </div>
   <p class="shell-hint-text"><?= Lang::e('set.tabs.hint') ?></p>
 </fieldset>
+<fieldset class="shell-set">
+  <legend><?= Lang::e('set.toolbar_rows') ?></legend>
+  <div class="shell-seg" role="radiogroup" aria-label="<?= Lang::e('set.toolbar_rows') ?>">
+    <label><input type="radio" name="ccToolbarRows" value="auto"> <i class="bi bi-text-wrap" aria-hidden="true"></i> <?= Lang::e('set.toolbar_rows.auto') ?></label>
+    <label><input type="radio" name="ccToolbarRows" value="2"> <i class="bi bi-distribute-vertical" aria-hidden="true"></i> <?= Lang::e('set.toolbar_rows.2') ?></label>
+    <label><input type="radio" name="ccToolbarRows" value="1"> <i class="bi bi-distribute-horizontal" aria-hidden="true"></i> <?= Lang::e('set.toolbar_rows.1') ?></label>
+  </div>
+  <p class="shell-hint-text"><?= Lang::e('set.toolbar_rows.hint') ?></p>
+</fieldset>
+<fieldset class="shell-set">
+  <legend><?= Lang::e('set.tour') ?></legend>
+  <p><button type="button" class="btn-line btn-sm-cc" data-set-tour><?= Lang::e('set.tour.again') ?></button></p>
+  <p class="shell-hint-text"><?= Lang::e('set.tour.hint') ?></p>
+  <label class="shell-check"><input type="checkbox" name="ccTourAuto" data-tour-auto> <?= Lang::e('set.tour.auto') ?></label>
+  <p class="shell-hint-text"><?= Lang::e('set.tour.auto.hint') ?></p>
+</fieldset>
+<fieldset class="shell-set">
+  <legend><?= Lang::e('set.toolbar_dock') ?></legend>
+  <div class="shell-seg cc-set-seg2" role="radiogroup" aria-label="<?= Lang::e('set.toolbar_dock') ?>">
+    <label><input type="radio" name="ccToolbarDock" value="top"> <i class="bi bi-layout-sidebar-inset-reverse" style="transform:rotate(90deg)" aria-hidden="true"></i> <?= Lang::e('set.toolbar_dock.top') ?></label>
+    <label><input type="radio" name="ccToolbarDock" value="bottom"> <i class="bi bi-layout-sidebar-inset" style="transform:rotate(90deg)" aria-hidden="true"></i> <?= Lang::e('set.toolbar_dock.bottom') ?></label>
+    <label><input type="radio" name="ccToolbarDock" value="left"> <i class="bi bi-layout-sidebar-inset" aria-hidden="true"></i> <?= Lang::e('set.toolbar_dock.left') ?></label>
+    <label><input type="radio" name="ccToolbarDock" value="right"> <i class="bi bi-layout-sidebar-inset-reverse" aria-hidden="true"></i> <?= Lang::e('set.toolbar_dock.right') ?></label>
+  </div>
+  <p class="shell-hint-text"><?= Lang::e('set.toolbar_dock.hint') ?></p>
+</fieldset>
 <?php /* My tools (0.5 DR.9): mytools-ui.js fills this — buttons of your own, their keys, JSON and CUIx import */ ?>
 <fieldset class="shell-set" data-mytools-settings><legend><?= Lang::e('mytools.legend') ?></legend></fieldset>
 <?php /* AI assistants and scripts (0.4 part 2 X.6, session agents): host.js fills this with Settings › Assistants (off by default) */ ?>

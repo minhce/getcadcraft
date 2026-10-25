@@ -82,6 +82,11 @@ export function writeDxf2000(doc) {
   w(9, '$TILEMODE'); w(70, 1);
   w(0, 'ENDSEC');
   w(0, 'SECTION'); w(2, 'CLASSES');
+  if ((model.objects || []).some((o) => o.type === 'PDFDEFINITION')) {   // PDF underlays (0.7 D7.24): the classes a reader needs to take them
+    w(0, 'CLASS'); w(1, 'PDFDEFINITION'); w(2, 'AcDbPdfDefinition'); w(3, 'ObjectDBX Classes'); w(90, 1153); w(91, 0); w(280, 0); w(281, 0);
+    w(0, 'CLASS'); w(1, 'PDFUNDERLAY'); w(2, 'AcDbPdfReference'); w(3, 'ObjectDBX Classes'); w(90, 4095); w(91, 0); w(280, 0); w(281, 1);
+  }
+  if (model.scales?.length) { w(0, 'CLASS'); w(1, 'SCALE'); w(2, 'AcDbScale'); w(3, 'ObjectDBX Classes'); w(90, 1153); w(91, 0); w(280, 0); w(281, 0); }   // the scale list (0.7 D7.19)
   if (geo) { w(0, 'CLASS'); w(1, 'GEODATA'); w(2, 'AcDbGeoData'); w(3, 'ObjectDBX Classes'); w(90, 4095); w(280, 0); w(281, 0); }
   w(0, 'ENDSEC');
 
@@ -181,6 +186,9 @@ export function writeDxf2000(doc) {
 
   // ---- entities (owner = the block record they live in)
   const clips = [];   // XCLIP (0.5 WL.16): { own, xd, d2, sf, pts } — written in OBJECTS
+  const pdfDefs = (model.objects || []).filter((o) => o.type === 'PDFDEFINITION'), pdfDictH = h(), pdfH = new Map();   // PDF underlays (0.7 D7.24)
+  const scaleList = (model.scales || []).filter((x) => x && x.name && x.paperUnits > 0 && x.drawingUnits > 0), scaleDictH = h(), scaleH = scaleList.map(() => h());   // ACAD_SCALELIST (0.7 D7.19)
+  const pdfDefH = (mh) => { if (!pdfH.has(mh)) pdfH.set(mh, h()); return pdfH.get(mh); };
   const head = (type, e, owner, paper) => {
     const own = h();
     w(0, type); w(5, own);
@@ -224,7 +232,7 @@ export function writeDxf2000(doc) {
         head(e.type, e, owner, paper); w(100, e.type === 'XLINE' ? 'AcDbXline' : 'AcDbRay'); P(10, e.start); P(11, e.direction); break;
       case 'LWPOLYLINE': {
         const each = e.vertices.some((v) => v.startWidth || v.endWidth);
-        head('LWPOLYLINE', e, owner, paper); w(100, 'AcDbPolyline'); w(90, e.vertices.length); w(70, e.closed ? 1 : 0); w(43, f(each ? 0 : e.constantWidth || 0));
+        head('LWPOLYLINE', e, owner, paper); w(100, 'AcDbPolyline'); w(90, e.vertices.length); w(70, (e.closed ? 1 : 0) | (e.plinegen ? 128 : 0)); w(43, f(each ? 0 : e.constantWidth || 0));
         if (e.elevation) w(38, f(e.elevation));
         th(e);
         for (const v of e.vertices) { w(10, f(v.x)); w(20, f(v.y)); if (each) { w(40, f(v.startWidth || 0)); w(41, f(v.endWidth || 0)); } if (v.bulge) w(42, f(v.bulge)); }
@@ -266,6 +274,13 @@ export function writeDxf2000(doc) {
         }
         return;
       }
+      case 'PDFUNDERLAY': {   // 0.7 D7.24: the definition handle, insertion point, scale, turn, flags (1 clip on, 2 on, 4 monochrome, 8 adjust colours, 16 clip inside), contrast, fade, clip points
+        head('PDFUNDERLAY', e, owner, paper); w(100, 'AcDbUnderlayReference'); w(340, pdfDefH(e.definition)); P(10, e.insertion);
+        w(41, f(e.scale?.x ?? 1)); w(42, f(e.scale?.y ?? 1)); w(43, f(e.scale?.z ?? 1)); if (e.rotation) w(50, f(deg(e.rotation)));
+        w(210, '0.0'); w(220, '0.0'); w(230, '1.0'); w(280, e.flags | 0); w(281, e.contrast | 0); w(282, e.fade | 0);
+        for (const p of e.clip || []) { w(11, f(p.x)); w(21, f(p.y)); }
+        break;
+      }
       case 'SOLID': case '3DFACE': {
         head(e.type, e, owner, paper); w(100, e.type === 'SOLID' ? 'AcDbTrace' : 'AcDbFace');
         e.points.forEach((p, i) => P(10 + i, p));
@@ -289,13 +304,36 @@ export function writeDxf2000(doc) {
         w(98, 0);
         break;
       }
+      case 'SPLINE': {   // 0.7 D7.10 (spline.js): control points, knots, weights and fit points as DXF keeps them
+        const ctrl = e.control || [], fit = e.fit || [], knots = e.knots || [], ws = e.weights;
+        head('SPLINE', e, owner, paper); w(100, 'AcDbSpline');
+        w(210, '0.0'); w(220, '0.0'); w(230, '1.0');
+        w(70, (e.flags | 0) & 15); w(71, e.degree); w(72, knots.length); w(73, ctrl.length); w(74, fit.length);
+        w(42, '1E-10'); w(43, '1E-10'); w(44, '1E-10');
+        if (fit.length && e.startTangent && (e.startTangent.x || e.startTangent.y)) P(12, e.startTangent);
+        if (fit.length && e.endTangent && (e.endTangent.x || e.endTangent.y)) P(13, e.endTangent);
+        for (const k of knots) w(40, f(k));
+        if (ws) for (const x of ws) w(41, f(x));
+        for (const p of ctrl) P(10, p);
+        for (const p of fit) P(11, p);
+        break;
+      }
+      case 'OLE2FRAME': {   // an embedded object read from a DXF (0.7 D7.23, ole.js)
+        const o = e.dxfOle;
+        if (!o) break;
+        head('OLE2FRAME', e, owner, paper); w(100, 'AcDbOle2Frame'); w(70, 2); w(3, enc(o.title)); P(10, { x: o.p1.x, y: o.p1.y, z: 0 }); P(11, { x: o.p2.x, y: o.p2.y, z: 0 });
+        w(71, o.kind || 2); w(72, o.tile || 0); w(90, o.data.length);
+        for (let i = 0; i < o.data.length; i += 127) w(310, [...o.data.subarray(i, i + 127)].map((b) => b.toString(16).padStart(2, '0').toUpperCase()).join(''));
+        w(1, 'OLE');
+        break;
+      }
       case 'DIMENSION': {
         head('DIMENSION', e, owner, paper); w(100, 'AcDbDimension'); w(2, enc(blockName(e.block))); P(10, e.defPoint); P(11, e.textMid); w(70, e.flags ?? e.dimType);
         if (e.text) w(1, enc(e.text));
         if (e.textRotation) w(53, f(deg(e.textRotation)));
         w(3, e.style && !/^standard$/i.test(e.style) ? enc(e.style) : 'Standard');
         const k = e.dimType & 7;
-        if (k === 0 || k === 1) { w(100, 'AcDbAlignedDimension'); P(13, e.xline1); P(14, e.xline2); if (k === 0) { w(50, f(deg(e.angle || 0))); w(100, 'AcDbRotatedDimension'); } }
+        if (k === 0 || k === 1) { w(100, 'AcDbAlignedDimension'); P(13, e.xline1); P(14, e.xline2); if (k === 0) w(50, f(deg(e.angle || 0))); if (e.obliqueAngle) w(52, f(deg(e.obliqueAngle))); if (k === 0) w(100, 'AcDbRotatedDimension'); }   // 52: slanted extension lines (0.7 D7.14)
         else if (k === 4) { w(100, 'AcDbRadialDimension'); P(15, e.center); w(40, '0.0'); }
         else if (k === 3) { w(100, 'AcDbDiametricDimension'); P(15, e.center); w(40, '0.0'); }
         else if (k === 5) { w(100, 'AcDb3PointAngularDimension'); P(13, e.xline1); P(14, e.xline2); P(15, e.center); }
@@ -337,10 +375,20 @@ export function writeDxf2000(doc) {
   // ---- OBJECTS: the named-object dictionary, groups, layouts, the Standard multiline style
   w(0, 'SECTION'); w(2, 'OBJECTS');
   const dict = (dh, owner, items) => { w(0, 'DICTIONARY'); w(5, dh); w(330, owner); w(100, 'AcDbDictionary'); w(281, 1); for (const [k, v] of items) { w(3, k); w(350, v); } };
-  dict(H.nod, '0', [['ACAD_GROUP', H.groups], ['ACAD_LAYOUT', H.layoutsD], ['ACAD_MLINESTYLE', H.mlsD]]);
+  dict(H.nod, '0', [['ACAD_GROUP', H.groups], ['ACAD_LAYOUT', H.layoutsD], ['ACAD_MLINESTYLE', H.mlsD], ...(pdfH.size ? [['ACAD_PDFDEFINITIONS', pdfDictH]] : []), ...(scaleList.length ? [['ACAD_SCALELIST', scaleDictH]] : [])]);
   dict(H.groups, H.nod, []);
   dict(H.layoutsD, H.nod, layouts.map((L) => [enc(L.name), L.h]));
   dict(H.mlsD, H.nod, [['Standard', H.mls]]);
+  // PDF underlays (0.7 D7.24): ACAD_PDFDEFINITIONS holds one PDFDEFINITION per file and page
+  if (pdfH.size) {
+    const used = pdfDefs.filter((d) => pdfH.has(d.handle));
+    dict(pdfDictH, H.nod, used.map((d) => [enc(String(d.file).split(/[\\/]/).pop().replace(/\.[^.]*$/, '') + '|' + d.page), pdfH.get(d.handle)]));
+    for (const d of used) { w(0, 'PDFDEFINITION'); w(5, pdfH.get(d.handle)); w(102, '{ACAD_REACTORS'); w(330, pdfDictH); w(102, '}'); w(330, pdfDictH); w(100, 'AcDbUnderlayDefinition'); w(1, enc(d.file)); w(2, enc(d.page)); }
+  }
+  if (scaleList.length) {   // the drawing's scale list (0.7 D7.19): keys A0, A1, … as AutoCAD names them
+    dict(scaleDictH, H.nod, scaleList.map((x, i) => ['A' + i, scaleH[i]]));
+    scaleList.forEach((x, i) => { w(0, 'SCALE'); w(5, scaleH[i]); w(102, '{ACAD_REACTORS'); w(330, scaleDictH); w(102, '}'); w(330, scaleDictH); w(100, 'AcDbScale'); w(70, 0); w(300, enc(x.name)); w(140, f(x.paperUnits)); w(141, f(x.drawingUnits)); w(290, x.unitScale ? 1 : 0); });
+  }
   // clipped references (WL.16): xdict → ACAD_FILTER → SPATIAL → SPATIAL_FILTER (block coordinates, identity matrices)
   for (const c of clips) {
     dict(c.xd, c.own, [['ACAD_FILTER', c.d2]]);
@@ -372,6 +420,8 @@ export function writeDxf2000(doc) {
   w(0, 'EOF');
   lines[handseedAt] = seed.toString(16).toUpperCase();
 
+  if (report.counts.pdf) report.notes.push(t('dwg.save.pdf', { n: report.counts.pdf }));
+  if (doc.solids?.length) report.notes.push(t('ccacis.app.dxf', { n: doc.solids.length }));   // 0.7 D7.25: DWG only
   if (report.counts.mleader) report.notes.push(t('dxf2000.save.mleader', { n: report.counts.mleader }));
   { const n = pictureRefs(doc); if (n) report.notes.push(t('dxf.save.pictures', { n })); }
   { const n = doc.layouts.reduce((k, l) => k + [...l.entities.values()].filter((e) => e.type === 'viewport' && e.lov && Object.keys(e.lov).length).length, 0); if (n) report.notes.push(t('dxf.save.vpovr', { n })); }   // VP.3: DWG only   // DXF keeps pictures as their frames (0.5 WL.14)

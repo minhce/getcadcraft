@@ -72,6 +72,14 @@ While the box is open, {{key:Space}} types a space and {{key:Enter}} starts a ne
 
 Select a text to change it in the right panel instead: {{ui:Text}}, {{ui:Height}}, {{ui:Wrap width}} (0 = no wrapping), {{ui:Line spacing}}, {{ui:Rotation}}, the X and Y position and {{ui:Justify}}. The {{ui:Justify}} list also offers Bottom left, which text from other programs sometimes uses.
 
+## Formatting inside paragraph text from other programs
+
+Paragraph text in a DWG or DXF can carry codes inside it: colors per word, bold and italic, underline, overline and strikethrough, stacked fractions such as 1/2, and a different height for a word. CadCraft keeps those codes, draws them (on screen and in a plotted PDF) and saves them back unchanged.
+
+When you edit such a text (double-click, {{cmd:TEXTEDIT}}, the Text field of the right panel, or {{cmd:FIND}} with Replace), you edit its plain words. A word you type goes into the run next to it and takes its color and style; the other codes stay where they are. If you retype a stacked fraction's numbers, that fraction becomes plain text. Setting the whole text from the Text field keeps the codes only where it can tell which words stayed.
+
+Font names (`\F`) are kept and saved, but everything is drawn in the one Helvetica-style font. There is no toolbar for typing codes yet.
+
 ## Point at something: multileaders
 
 {{ui:Leader}} in the {{ui:Annotate}} group ({{cmd:MLEADER}}, `MLD`) draws an arrow, a leader line, a short landing and a note, as one object.
@@ -118,9 +126,9 @@ The mask covers lines under the text, on screen and when you plot. DWG 2004 or l
 
 ## Font
 
-All text is drawn in a Helvetica-style font, on screen and in PDFs. Text from opened drawings keeps its words, height and position, but not its original font.
+All text is drawn in a Helvetica-style font, on screen and in PDFs. Text from opened drawings keeps its words, height and position, but not its original font (the name of a font inside paragraph text is kept in the file, see above).
 
-In plotted PDFs, characters outside the Western European set (for example Greek, Cyrillic or Chinese) print as "?", and the history says how many there were.
+In plotted PDFs, text in any European script, Cyrillic or Greek prints as itself (the PDF carries the letters it needs, and you can still select and search the text). Chinese, Japanese and Korean text prints as itself too (the plot fetches a larger font the first time it is needed). Characters no font has a letter for, such as Arabic, print as "?", and the history says how many there were.
 
 ## Common mistakes
 

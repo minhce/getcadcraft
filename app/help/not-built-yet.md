@@ -15,7 +15,7 @@ CadCraft is in development. This page lists what the current build does not do, 
 | A CadCraft DWG checked in AutoCAD itself | Every saved version is read back by three other programs' DWG readers and by CadCraft. See [What a DWG keeps and changes](topic:files#what-a-dwg-keeps-and-changes). |
 | Saving DXF newer than 2000 | Save as DXF 2000, or as DWG up to AutoCAD 2018. |
 | Saving over the opened file in the browser | Every save downloads a new copy; replace the old file yourself if you want to. In CadCraft Studio, {{key:Mod+S}} writes back to the file you opened. |
-| Cloud saving and sync between computers | Not available yet. Keep your DWG and DXF files in your own folders. |
+| Cloud saving and sync between computers | CadCraft does not send its saves to the cloud yet: keep your DWG and DXF files in your own folders. In CadCraft Studio, [History](topic:history) lists the cloud versions of a drawing saved from elsewhere and copies of your own saves on this computer. |
 | Overlays, and editing a linked drawing in place | Attach the drawing as a link and reload it after changing the other drawing. A link stays a link when you save as DWG, and {{cmd:XCLIP}} clips it. |
 | Pictures in DXF; wipeouts that hide what is under them | DXF keeps a picture as its frame with the file name; DWG keeps it as a picture — see [Pictures in a drawing](topic:pictures). A wipeout shows as its frame. |
 | Editing multileaders that have a block, several leader lines or curved lines | They are drawn as the other program drew them and move as one. Text multileaders come in editable. |
@@ -32,11 +32,12 @@ CadCraft is in development. This page lists what the current build does not do, 
 | Patterned hatches in a saved DXF | R12 has no hatch: they are saved as their outlines. Save as DWG to keep the pattern. |
 | Associative arrays (edited later as one object) and arrays along a path | {{cmd:ARRAY}} makes plain copies: undo and run it again to change it. |
 | {{cmd:STRETCH}} with a crossing polygon | Use one or more crossing windows. |
-| {{cmd:PEDIT}} (editing a polyline's vertices and widths at the command line) | Grips, and the vertex browser in Properties (every vertex, its widths and bulge); {{cmd:JOIN}} makes a polyline from pieces. |
-| {{cmd:BREAK}} and {{cmd:LENGTHEN}} on ellipses and splines | Draw them again, or {{cmd:TRIM}} to another object. |
+| {{cmd:PEDIT}} Edit vertex (one vertex at a time at the command line) | Grips, and the vertex browser in Properties (every vertex, its widths and bulge). The rest of PEDIT is built: see [Splines and polylines](topic:splines). |
+| {{cmd:BREAK}}, {{cmd:LENGTHEN}}, {{cmd:OFFSET}}, {{cmd:TRIM}}, {{cmd:EXTEND}}, {{cmd:FILLET}} and {{cmd:JOIN}} on ellipses and splines | {{cmd:EXPLODE}} a spline (or {{cmd:PEDIT}} it) to get a polyline these commands take. |
 | Fillet and chamfer between an arc segment of a polyline and the segment next to it; fillet joining a line into a polyline | {{cmd:EXPLODE}} the polyline, then fillet the pieces. The fillet arc is added as its own object. |
 | Trim and extend: the Project option (3D) and extending a polyline's arc end | Trim in the plane of the drawing; for an arc end, explode the polyline or draw the arc again. |
-| Text styles, fonts, columns and formatting inside paragraph text (bold, stacked fractions, colors per word) | One Helvetica-style font; one height and color per text object. |
+| OLE objects: inserting them, running or editing them; showing the ones in a DWG; metafile pictures | See [Pictures](topic:pictures#objects-from-other-programs-ole). A DXF's objects show as their bitmap or a labelled frame; a DWG's are kept, not shown. |
+| Typing formatting codes (bold, stacked fractions, colors per word) in paragraph text; fonts other than the one Helvetica-style font; columns | Formatting that came in a file is kept, drawn and saved (see Text); new paragraph text has one height and color. |
 | Paragraph text edited at its rotation | The editor opens level; the text keeps its rotation. |
 | Multileaders saved as multileader objects in a DXF; several leader lines on one multileader; block content | A DWG keeps them as multileaders; an R12 DXF keeps what they draw (lines, arrowhead and text). |
 | Tables | Lines and text. |
@@ -54,9 +55,9 @@ CadCraft is in development. This page lists what the current build does not do, 
 | Transparency in DWG 2000 and DXF files | Other programs show those objects solid; CadCraft keeps the transparency. Save as DWG 2004 or later for everyone. |
 | An associative hatch in other programs | The hatch is saved; CadCraft keeps the setting, other programs see a hatch that does not follow its boundary. |
 | Coordinates in Properties in the UCS | Properties shows world coordinates; the status bar and {{cmd:ID}} show UCS ones. See [Turn the view and use your own coordinates](topic:ucs-and-turned-view). |
-| Annotative scaling | The annotative setting is kept with text; the annotation scale is always 1:1. |
+| Annotative scaling | The annotative setting is kept with text; the annotation scale is always 1:1. (The drawing's scale list is edited with SCALELISTEDIT and saved; it does not drive annotation yet.) |
 | Changing a dynamic block's distances, angles or flips; dynamic blocks kept dynamic when you save in another DWG version or as DXF | Switch its visibility state in Properties › {{ui:Custom}}; its other values show there read only. It stays dynamic when you save it as DWG in the version the drawing came in. See [Dynamic blocks](topic:dynamic-blocks). |
-| Splines with fit and control points | An opened spline becomes a polyline; edit its vertices in Properties. |
+| Spline fit tolerance, spline degree 6 and above, 3D splines | Fit and control points, degree 1 to 5 and weights are built: see [Splines and polylines](topic:splines). A spline's height (Z) is not kept. |
 | A hatch that follows its boundary (associative) | The associative setting is kept and saved; hatch again after changing the outline. |
 ## Precision aids
 
@@ -74,12 +75,14 @@ CadCraft is in development. This page lists what the current build does not do, 
 | Not built yet | Instead, today |
 |---|---|
 | A title block that updates itself | Edit its texts by hand; the SCALE field does not follow viewport changes. |
-| Named dimension styles | Settings for new dimensions plus each dimension's own sizes. See [Set dimension sizes](topic:dimension-settings). |
+| Saving which dimension style is current; dimension text dragged to a free place; annotative dimension scales | A drawing opens with Standard current. Text sits on the dimension line (DIMTEDIT Left / Right / Center). See [Set dimension sizes](topic:dimension-settings). |
 | Ordinate dimensions, and editable two-line angular dimensions from opened files | They are shown as drawn in the file. |
 | Annotative scaling | Set sizes for one plot scale with {{cmd:DIMSCALE}} and text heights. |
-| Reading CTB files, named plot styles (STB), and linetype, end, join and fill settings in a plot style | Make the table in {{ui:Plot style tables}} (color, gray, ink and lineweight per color): see [Plot style tables](topic:plot-pdf#plot-style-tables). |
+| Reading CTB files (it waits for a sample file), named plot styles (STB), dither, pen numbers and adaptive linetype adjustment in a plot style | Make the table in {{ui:Plot style tables}} (color, gray, ink, lineweight, linetype, line end and join, and fill style per color): see [Plot style tables](topic:plot-pdf#plot-style-tables). |
 | Page setups | Choose paper, scale and plot style in the {{ui:Plot to PDF}} dialog; a sheet keeps its plot style. |
-| Characters outside the Western European set in PDFs | They print as "?". |
+| Arabic, Hebrew, Thai, Hindi and other scripts in PDFs, and rare ideographs (European scripts, Cyrillic, Greek, Chinese, Japanese and Korean print) | They print as "?". |
+| Pictures inside an attached PDF page, in a plot | The page's lines, fills and text print. A page that is only a picture goes in with {{cmd:SCANATTACH}}, and pictures print. See [PDF underlays](topic:pdf-underlay#plot-and-save). |
+| Sending a job to a laser from CadCraft Studio (Studio has no Web Serial) | Save the G-code and send it with your laser's own program, or send it from Chrome or Edge. See [Send a drawing to a laser](topic:laser-cutting#send-from-the-browser). |
 
 ## Constraints and parameters
 
@@ -100,12 +103,13 @@ CadCraft is in development. This page lists what the current build does not do, 
 | Fillets, chamfers, shells and lofts; sweeps along a path that rises (3D paths) | Extrude outlines with arcs, push and pull faces, revolve and sweep along flat paths. |
 | Extrude in another direction than up | Draw the shape on the ground and extrude it up or down (with a taper or along a path if you like); rotate the solid afterwards. |
 | Elevation and thickness of 2D objects | The drawing lies on the ground (height 0) on the 3D tab. |
-| Solids, regions, bodies and meshes from other programs (3DSOLID, ACIS, polyface and polygon meshes) | Counted in "About this file", not shown. Ask for them as 3D faces in model space. |
+| Editing solids, regions and bodies from other programs; showing those inside blocks; their faces on swept, lofted or other freeform surfaces; polyface and polygon meshes | Model-space solids show on the 3D tab as they are and are saved back unchanged in DWG; what is not drawn is listed when the 3D tab opens. Ask for meshes as 3D faces in model space. See [Solids from other programs](topic:3d-solids#solids-from-other-programs). |
 | Copy and paste of solids | On the 3D tab, use {{cmd:COPY}}. The clipboard holds 2D objects only. |
 | Sections, views that follow later changes to the solids, and shaded solids on plotted sheets | {{cmd:VIEWBASE}} places flat views (a snapshot); run it again after changing the solids. |
 | Materials, textures and lighting settings | The visual styles: shaded, edges, hidden line, wireframe, X-ray. |
 | Map layers plotted, on sheets' viewports and in the 3D tab; pictures from files saved with the drawing; a drawing's location written for other programs in DWG 2000–2007 and DXF R12 | Map layers show under the model space on screen; the system and the layer list are saved with the drawing: see [Map layers under the drawing](topic:map-layers) |
 | E57 scans over 6 million points or 512 MB, scanner makers' own files (RCP, RCS, FLS, LGS, TZF, ZFS), a point cloud saved with the drawing or plotted, snapping to a cloud on the 3D tab, upright (section) slices on the Model tab | Export big or makers' own scans as LAS or LAZ ([Point cloud formats](topic:point-cloud-formats)); attach the cloud each time you open the drawing; trace from a plan slice on the Model tab: see [Trace as-built lines over a point cloud](topic:point-clouds) |
+| Registering scans: finding targets (spheres, checkerboards) in a scan by itself, solving all scans together (bundle adjustment), scale, registering against a model | Pick matching points or type target coordinates, then refine one scan at a time with ICP: see [Register several scans into one](topic:register-scans) |
 
 ## Routines and customizing
 
@@ -115,7 +119,8 @@ CadCraft is in development. This page lists what the current build does not do, 
 | LISP's `grread`, reactors (`vlr-…`), curve functions (`vlax-curve-…`), dictionaries and extended data, the Express Tools' `acet-…` | The rest of the language runs: see [Run LISP routines](topic:run-lisp). The command line names a missing function when a routine reaches one. |
 | Images and slides in a routine's dialog | They show as blank frames; the rest of the dialog works. |
 | CraftScript (.craft), Lua and Python in CadCraft | Run them in PartCraft's Script workspace. |
-| The Startup Suite and aliases kept on your computer or synced | They are kept in this browser; the desktop app and the cloud service will keep them for you. |
+| Layer, color and linetype lists inside the ribbon menu styles | Use the {{ui:Layers}} panel and {{ui:Properties}}. |
+| The Startup Suite and aliases kept on your computer or synced | They are kept in this browser; the desktop app and the cloud service will keep them for you. In Studio, `acad.lsp` and `acaddoc.lsp` are read from a support folder you choose (Load applications). |
 
 ## Help
 

@@ -1,9 +1,9 @@
 ---
 title: Plot to PDF
-summary: Make a PDF of a sheet at full size, or of the model at a scale or fitted to the paper, and print it from the browser.
+summary: Make a PDF of a sheet at full size, or of the model at a scale or fitted to the paper, print it from the browser or from Studio, or save it as a PNG or SVG.
 section: tasks
 order: 130
-keywords: plot, print, pdf, publish, exportpdf, paper, scale, monochrome, grayscale, black and white, line weight, pen, page setup, plot window, plot style, plot style table, ctb, color dependent, screening, plotstyles, stylesmanager
+keywords: plot, print, printer, copies, png, svg, picture, pdf, publish, exportpdf, paper, scale, monochrome, grayscale, black and white, line weight, pen, page setup, plot window, plot style, plot style table, ctb, color dependent, screening, plotstyles, stylesmanager
 ---
 
 ## What you will make
@@ -76,6 +76,10 @@ To make your own, for example red lines thick and black, everything else thin:
    - {{ui:As a gray}}: the color as its gray.
    - {{ui:Ink (%)}}: 100 is full ink, 50 is half way to white (screening), for background lines.
    - {{ui:Lineweight}}: {{ui:Its own lineweight}} keeps the object's or layer's lineweight; a value prints every line of that color at that width.
+   - {{ui:Linetype}}: print every line of that color with another linetype (for example everything red dashed); {{ui:Use the object's linetype}} leaves them.
+   - {{ui:Line end}} and {{ui:Line join}}: butt, square or round ends, and miter, bevel or round corners (round, as before, when you set nothing).
+   - {{ui:Fill style}}: a solid fill of that color prints as hatch lines (horizontal or vertical bars, slants, crosshatch, diamonds, square dots) instead of ink, for printers and plans where flat ink is too heavy.
+   The table itself has two more settings: {{ui:Lineweights}}, the widths it knows (a printed line goes to the nearest of them), and {{ui:Linetype scale}}, a factor on the dashes of every linetype that is not an ISO one.
 5. Click {{ui:Done}}. The table is kept in the drawing, and the sheet (or the model) now plots with it. {{ui:Cancel}} drops the changes.
 
 A colour with its own pen shows a dot in its corner, and a dot at the bottom when it sets a lineweight. An object with a true color (not one of the 255) uses the pen of the nearest standard color.
@@ -86,17 +90,21 @@ To use a table in another drawing, click {{ui:Export}} in {{ui:Plot style tables
 
 ## Print
 
-1. In the dialog, click {{ui:Open to print}}.
-2. The PDF opens in a new browser tab.
-3. Print from that tab with the browser's print command ({{key:Mod+P}} there).
+**In the browser**, click {{ui:Print…}}. CadCraft makes the PDF and opens the browser's own print dialog for it. Choose "Actual size" or 100% (not "Fit") there to keep the scale. If the browser will not print from the page, the PDF opens in a new tab instead: print it from there with {{key:Mod+P}}.
 
-In the printer settings, choose "Actual size" or 100% (not "Fit") to keep the scale.
+You can also click {{ui:Open to print}}: the PDF opens in a new browser tab, and you print it from there.
 
 :::safari
 Safari may show the PDF and wait for you to use **File**, then **Print**.
 :::
 
 If your browser blocks the new tab, CadCraft downloads the PDF instead and says so in the history. Allow pop-ups for the site to open it in a tab next time.
+
+**In CadCraft Studio**, the {{ui:Plot to PDF}} dialog lists the printers of the computer. Choose the {{ui:Printer}}, the {{ui:Paper in the printer}} and the number of {{ui:Copies}}, then click {{ui:Print…}}. {{ui:Same as the plot}} picks the printer's paper that is the size of the sheet (A3 for an A3 sheet); when the printer has none, it uses its own paper and fits the sheet to it. On Windows the sheet is sent as a 300 dpi picture, because Windows cannot print a PDF without a PDF program; on Linux and macOS the PDF itself goes to the system's print service. Nothing leaves the computer.
+
+## Picture and SVG files
+
+{{ui:Download PNG}} saves the plotted sheet as a picture at 300 dpi (lowered only when a very large sheet would be bigger than the browser can make; the history says so). {{ui:Download SVG}} saves it as a scalable drawing in millimeters, with the lines and text of the plot. Both come from the same plot as the PDF, with the same plot style, line weight and area. Pictures placed in the drawing are in the PDF only; the history says how many were left out.
 
 ## Pictures
 
@@ -109,7 +117,7 @@ The dialog remembers your last paper, orientation, scale and line weight in this
 ## Common mistakes
 
 - **The PDF is blank or the buttons are grey.** There is nothing to plot (an empty model), or {{ui:A window…}} is chosen and no window is picked yet ("Pick the window to plot.").
-- **Text shows "?" in the PDF.** The PDF uses the built-in Helvetica font, which only has Western European characters. The history counts how many characters were replaced.
+- **Text shows "?" in the PDF.** Text in Polish, Czech, Cyrillic, Greek and the other scripts of Europe prints as itself: the PDF then carries the letters it needs (from the Liberation Sans font, which has Helvetica's widths), and the text can still be selected and searched. Chinese, Japanese and Korean text prints as itself too: when a drawing has it, the plot fetches a larger font (about 10 MB, once) and the PDF carries only the characters used, so it needs a connection the first time (not in an offline copy that was saved before). Rare ideographs outside that font, and scripts such as Arabic and Hebrew, print as "?", and the history counts them.
 - **All lines are the same thickness.** Their lineweight is the default: give layers or objects a {{ui:Lineweight}} in the right panel (see [Line weights and linetypes](topic:units-papers-scales#line-weights-and-linetypes)), or set lineweights per color in a [plot style table](topic:plot-pdf#plot-style-tables).
 - **"(not in this drawing)" next to the plot style.** The drawing came from another program and names a table it does not include. Choose one of the tables, or make one with that name.
 - **Construction lines printed.** Set their layer not to plot: click its printer button in the {{ui:Layers}} panel.

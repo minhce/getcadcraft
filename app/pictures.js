@@ -80,7 +80,7 @@ export function freePictureName(doc) {
  */
 export function picturePlacement(ref, block) {
   const fr = pictureFrame(block);
-  if (!fr || block.entities.some((e) => e !== fr && !e.picName)) return null;
+  if (!fr || fr.ole || block.entities.some((e) => e !== fr && !e.picName)) return null;   // an OLE object's preview is drawn like a picture but is no IMAGE (ole.js, 0.7 D7.23)
   const p = fr.pic, m = insertMatrix(ref, block);
   const at = mApply(m, { x: p.x, y: p.y });
   const vec = (x, y) => ({ x: m[0] * x + m[2] * y, y: m[1] * x + m[3] * y });

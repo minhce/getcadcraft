@@ -38,6 +38,8 @@ The [Command reference](topic:commands) lists every command and alias.
 If you like the ribbon of AutoCAD, pick the {{ui:Drafting classic}} menu style in {{ui:Settings}} › {{ui:CadCraft}} › {{ui:Menus, keys and mouse}}: Home, Insert, Annotate, Parametric, View, Manage and Output tabs over the same command line, and the middle button pans while a right click is Enter. See [Menus, keys and mouse](topic:menus-keys-and-mouse).
 :::
 
+The [command map](topic:command-map) lists every command CadCraft has with its short names, and the [cheat sheet](topic:cheat-sheet) the 40 you will use most (also as a one-page PDF).
+
 ## Differences that trip people up
 
 ### Typed points are absolute
@@ -66,17 +68,17 @@ Trim and Extend start in Quick mode: every visible object is a cutting edge or a
 
 ### Paragraph text and single-line text
 
-`T`, `MT` and `MTEXT` are paragraph text typed in place, with a width, line spacing and justification; `DT` and `DTEXT` are single-line text, as you know them. There are no text styles, columns or in-text formatting (bold, stacked fractions); everything draws in a Helvetica-style font.
+`T`, `MT` and `MTEXT` are paragraph text typed in place, with a width, line spacing and justification; `DT` and `DTEXT` are single-line text, as you know them. There are no text styles or columns, and you cannot type in-text formatting (bold, stacked fractions) yet; formatting that comes in a file is kept, drawn and saved (see [Add text and labels](topic:text#formatting-inside-paragraph-text-from-other-programs)). Everything draws in a Helvetica-style font.
 
 ### Save means "download a copy"
 
-{{key:Mod+S}}, `SAVE` and `QSAVE` download a copy in the drawing's format: a DWG you opened saves as DWG, a DXF as DXF. Nothing is overwritten in place, and opened files are never changed.
+{{key:Mod+S}}, `SAVE` and `QSAVE` download a copy in the drawing's format: a DWG you opened saves as DWG, a DXF as DXF. In the browser nothing is overwritten in place, and opened files are never changed. In CadCraft Studio, {{key:Mod+S}} writes back to the file you opened.
 
-`SAVEAS` ({{key:Mod+Shift+S}}) is a small dialog, not a file browser: pick {{ui:DWG}} (with its {{ui:Version}}, AutoCAD 2000 to 2018) or {{ui:DXF R12}} and click {{ui:Save}}. The browser decides where the download goes. `DXFOUT` always downloads DXF R12.
+`SAVEAS` ({{key:Mod+Shift+S}}) is a small dialog, not a file browser: pick {{ui:DWG}} (with its {{ui:Version}}, AutoCAD 2000 to 2018), {{ui:DXF R12}} or {{ui:DXF 2000}} and click {{ui:Save}}. The browser decides where the download goes. `DXFOUT` always downloads DXF R12.
 
 A DWG you opened saves in the version it came in; a new drawing saves in the AutoCAD 2000 format unless you pick another. Sheets, dimensions and hatch patterns are kept. See [Files: what opens, what saves](topic:files#saving).
 
-### Layers: simpler, and not undone
+### Layers: simpler
 
 - Every layer change (on, freeze, lock, color, plot, linetype, lineweight, current layer) is one undo step.
 - Off and freeze have the same effect in CadCraft.
@@ -85,9 +87,9 @@ A DWG you opened saves in the version it came in; a new drawing saves in the Aut
 - There is no layer properties manager and no layer states; {{cmd:RENAME}}, {{cmd:LAYMRG}} and {{cmd:LAYDEL}} rename, merge and delete layers. Linetypes and lineweights are set in the right panel (see [Line weights and linetypes](topic:units-papers-scales#line-weights-and-linetypes)); {{cmd:LAYISO}}, {{cmd:LAYOFF}}, {{cmd:LAYFRZ}} and {{cmd:LAYMCUR}} work by picking.
 - Saving to DXF R12 writes layer names in capitals. A DWG keeps them as you typed them.
 
-### Dimension styles are per dimension
+### Dimension styles
 
-There are no named dimension styles to manage. `DIMSCALE` and the other settings change what new dimensions use; each dimension keeps its own sizes, which you change in the Properties panel. Dimensions follow the drawing's length format (decimal, or feet and inches with {{cmd:UNITS}}), or their own {{ui:Format}}. See [Set dimension sizes](topic:dimension-settings).
+`DIMSTYLE` opens a manager for named styles (new, modify, set current, compare, apply). `DIMSCALE` and the other settings still change what new dimensions use, and each dimension keeps its own sizes, which you can also change in the Properties panel. The current style is not saved in the file. Dimensions follow the drawing's length format (decimal, or feet and inches with {{cmd:UNITS}}), or their own {{ui:Format}}. See [Set dimension sizes](topic:dimension-settings).
 
 ### Plotting is simpler
 
@@ -103,7 +105,7 @@ The grid is for looking at only; points do not snap to it (there is no F9 snap m
 
 ### Feet and inches
 
-Choose {{ui:Length format}} {{ui:Architectural}} or {{ui:Engineering}} (or type {{cmd:UNITS}}), and type lengths as you know them: `12'6"`, `12'6-1/2"`. Use a hyphen, not a space, before a fraction: {{key:Space}} is {{key:Enter}}. Set {{ui:Units}} to {{ui:Inches}} too, so that sheets and plots offer architectural scales. The format is not yet kept in saved files. See [Feet and inches](topic:units-papers-scales#feet-and-inches-and-fractions).
+Choose {{ui:Length format}} {{ui:Architectural}} or {{ui:Engineering}} (or type {{cmd:UNITS}}), and type lengths as you know them: `12'6"`, `12'6-1/2"`. Use a hyphen, not a space, before a fraction: {{key:Space}} is {{key:Enter}}. Set {{ui:Units}} to {{ui:Inches}} too, so that sheets and plots offer architectural scales. The format is kept in saved DWG and DXF files. See [Feet and inches](topic:units-papers-scales#feet-and-inches-and-fractions).
 
 ### Copy and paste stays inside CadCraft
 
@@ -115,4 +117,4 @@ A web page cannot take {{key:Mod+N}}, {{key:Mod+W}} or {{key:Mod+T}} from the br
 
 ## Commands you may reach for that are not here yet
 
-{{cmd:PEDIT}}, {{cmd:XREF}} and {{cmd:TABLE}} are not built. Typing one says "Unknown command". [Not built yet](topic:not-built-yet) lists what to do instead today.
+{{cmd:TABLE}} is not built. Typing it says "Unknown command". ({{cmd:PEDIT}}, {{cmd:SPLINE}}, {{cmd:SPLINEDIT}} and {{cmd:XREF}} are built.) [Not built yet](topic:not-built-yet) lists what to do instead today.

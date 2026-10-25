@@ -286,8 +286,8 @@ export function createPropsPanel(o) {
     list.forEach((a, i) => {
       const id = 'cc-p-att' + i;
       const locked = a.constant || (isLib && a.tag !== LIB_TAGS.item && a.tag !== LIB_TAGS.qty && a.tag !== 'CC-PART-MATERIAL');   // a part's material is the user's to set (0.5 MQ.4)
-      const label = el('label', { htmlFor: id, title: (a.prompt ? a.prompt + ' — ' : '') + a.tag + (a.invisible ? ' ' + t('props.att.hidden.title') : '') + (a.constant ? ' ' + t('props.att.constant.title') : '') },
-        a.tag, a.invisible ? el('span', { className: 'cc-muted' }, ' ' + t('props.att.hidden')) : null);
+      const label = el('label', { htmlFor: id, title: (a.prompt ? a.prompt + ' — ' : '') + a.tag + (a.invisible ? ' ' + t('props.att.hidden.title') : a.hidden ? ' ' + t('props.att.state_hidden.title') : '') + (a.constant ? ' ' + t('props.att.constant.title') : '') },
+        a.tag, a.invisible || a.hidden ? el('span', { className: 'cc-muted' }, ' ' + t('props.att.hidden')) : null);   // a.hidden: its visibility state hides it (0.6.1)
       if (locked) { out.attrs.push(label, el('span', { className: 'v cc-att-ro', id, title: a.value }, a.value || '–')); return; }
       const inp = el('input', { type: 'text', className: 'cc-input', id, value: a.value, maxLength: 2000, dataset: { attr: a.tag } });
       inp.addEventListener('change', () => {
@@ -655,6 +655,34 @@ export function createPropsPanel(o) {
     pickLabel: () => pending?.label || '',
     focusSheetName: () => ui.props.querySelector('#cc-sheet-name')?.focus(),
     get autohide() { return !!pr.extra.autohide; },
+    /**
+     * The dimension style manager's Modify form (0.7 D7.14, dimstyle-ui.js): the Properties panel's dimension fields (Lines & arrows,
+     * Text, Fit, Units, Alternate units, Tolerances) on a stand-in linear dimension that carries `st`. Each change calls
+     * onChange(newSt); nothing touches the drawing. → { el, dispose }
+     */
+    dimStyleForm(st, onChange) {
+      let fake = { id: -1, type: 'dim', kind: 'linear', text: '', p1: { x: 0, y: 0 }, p2: { x: 100, y: 0 }, loc: { x: 50, y: 10 }, rot: 0, st: { ...st } };
+      const box = el('div', { className: 'cc-dsform' });
+      const sections = new Set(['lines', 'text', 'fit', 'units', 'alt', 'tol']);
+      const ctx = { doc, vertex: 0 };
+      const opts = fieldOpts([fake], 'cc-dsf-', (def, v) => {
+        try {
+          const next = def.set(fake, v, ctx);
+          if (next && next !== fake) { fake = next; onChange({ ...fake.st }); }
+        } catch (err) { if (err && err.key) note(err.message); else throw err; }
+        draw();
+      });
+      function draw() {
+        const keep = document.activeElement?.id;
+        const defs = defsFor('dim', [fake], ctx).filter((d) => sections.has(d.sec) && d.key !== 'dim.text' && d.key !== 'dim.trot');
+        box.replaceChildren(...sectionsOf(defs, [fake], opts));
+        for (const n of box.querySelectorAll('[id^="cc-p-"]')) n.id = n.id.replace('cc-p-', 'cc-dsf-');   // not the panel's own ids
+        for (const l of box.querySelectorAll('label[for^="cc-p-"]')) l.htmlFor = l.htmlFor.replace('cc-p-', 'cc-dsf-');
+        if (keep && keep.startsWith('cc-dsf-')) box.querySelector('#' + keep)?.focus();
+      }
+      draw();
+      return { el: box, dispose() { box.replaceChildren(); } };
+    },
     /** P.13: a section from an add-on (propdefs.js addSection); the panel redraws. → remove() */
     addSection(spec) { const off = addSection(spec); schedule(); return () => { off(); schedule(); }; },
   };

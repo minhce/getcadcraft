@@ -19,7 +19,15 @@
  * layout is kept as a block named CCLAYOUT_n that CadCraft reads back as a layout.
  */
 
-import { TAU, normAngle, ellipsePoints, rad, deg, textLayout, mMul, mTranslate, mRotate, mApply, viewportCorners, explodeEntity, entityBounds, emptyBounds, validBounds, clipInfinite } from './geom.js';
+import { unescapeText } from './dxf-decode.js';
+import { cleanScales } from './scales.js';
+import { standardSt } from './dimstyles.js';
+import { oleParts } from './ole.js';
+import { keptFromDxf, SOLID_TYPES } from './acis-cad.js';   // 0.7 D7.25: other programs' 3D solids, kept
+import { fromFile as splineFromFile, polyline as splinePolyline, valid as splineValid } from './spline.js';
+import { hasFormatting, plainOf } from './mtext.js';
+import { underlayParts } from './pdfmodel.js';   // PDF underlays (0.7 D7.24)
+import { TAU, normAngle, ellipsePoints, rad, deg, textLayout, mMul, mTranslate, mRotate, mApply, viewportCorners, explodeEntity, entityBounds, emptyBounds, validBounds, clipInfinite, attdefHidden, vpModelCentre, vpDcsCentre } from './geom.js';
 import { t } from './i18n.js';
 import { readDxfModel } from './dxf-model.js';
 import { patternOf } from './linetypes.js';
@@ -27,10 +35,11 @@ import { isXrefRoot } from './xref.js';
 import { extrasFrom, EXTRA_TYPES, maskOf } from './dwg-import.js';
 import { forFile, parametricText, refKeyIn, isParamBlock, PARAM_BLOCK } from './gcons.js';
 import { isStyleBlock, payloadFrom, payloadStrings, STYLE_BLOCK } from './plotstyle.js';
+import { laserPayload, laserFromPayload, isLaserBlock, LASER_BLOCK } from './laser-file.js';   // 0.7 SU.772: the Laser panel's settings, block CADCRAFT_LASER
 import { isGeoBlock, geoFromPayload, geoPayload, GEO_BLOCK, fromDxfGroup, readGeo } from './geodwg.js';   // 0.6 GEO-DWG
 import { attdef, resolveAttribs, worldAttribs } from './attrs.js';
 import { nearestAci } from './doc.js';
-import { dimGeometry, dimTextPoint, angularFromLines, DIM_DEFAULTS } from './dims.js';
+import { dimGeometry, dimTextPoint, dimLinePoints, angularFromLines, DIM_DEFAULTS } from './dims.js';
 import { matchPaper } from './sheets.js';
 import { forFile3d, read3dText, read3dView, isM3dBlock, M3D_BLOCK, split3d } from './model3d.js';
 import { vportRecords, vportsFrom } from './dwg-vports.js';
@@ -49,6 +58,7 @@ const HEADER_DIMVARS = { $DIMSCALE: 'scale', $DIMASZ: 'asz', $DIMEXO: 'exo', $DI
 // Reading
 
 export function readDxf(text) {
+  dxfCodepage = '';
   if (text.startsWith(t('dxf.autocad_binary_dxf'))) throw new Error(t('dxf.binary_dxf_save_ascii'));
   const raw = text.split(/\r?\n/);
   const pairs = [];
@@ -65,6 +75,8 @@ export function readDxf(text) {
   const styleHandles = new Map();         // STYLE handle → name (a DIMSTYLE's text style, 340)
   const layoutObjs = [];                  // LAYOUT objects (R2000+)
   const paperBlocks = new Map();          // *Paper_SpaceN → raw entity list
+  const pdfDefsH = new Map();             // PDFDEFINITION handle → { file, page }
+  const scalesIn = [];                    // SCALE objects (ACAD_SCALELIST, 0.7 D7.19)
   let paperRaw = [];                      // ENTITIES with 67 = 1 (the active layout)
   const noPlot = new Set();               // layer names (upper case) CadCraft wrote as not plotting
   const layerByH = new Map();             // layer handle (upper case) → name, for viewports' frozen layers (VP.1, group 331)
@@ -102,6 +114,9 @@ export function readDxf(text) {
   const blockMap = new Map(out.blocks.map((b) => [b.name, b]));
   resolveAttribs([out.entities, paperRaw, ...paperBlocks.values(), ...out.blocks.map((b) => b.entities), ...out.layouts.map((l) => l.entities)], blockMap);
   resolveClips();
+  resolvePdfs();
+  resolveOle();
+  { const sc = cleanScales(scalesIn); if (sc.length) out.meta.scales = sc; }
   buildLayouts();
   if (geoOwn || geodata) {
     const g = readGeo({ payload: geoOwn, geodata: geodata?.fields, units: out.meta.units || '' });
@@ -116,6 +131,15 @@ export function readDxf(text) {
   // 0.4 C6: multileaders, pictures and wipeouts come through the drawing model the DWG import uses (dxf-model.js)
   if (/\n\s*0\r?\n(MULTILEADER|IMAGE|WIPEOUT)\r?\n/.test(text)) mergeExtras();
   if (out.report.xrefs) out.report.notes.push(t('dwg.read.xrefs', { n: out.report.xrefs }));
+  if (/\n\s*0\r?\n(3DSOLID|REGION|BODY)\r?\n/.test(text)) {   // other programs' 3D solids (0.7 D7.25, acis-cad.js): kept for the 3D tab and Save
+    const s = keptFromDxf(pairs);
+    if (s.kept.length) {
+      out.solids = s.kept;
+      for (const k of SOLID_TYPES) { const n = s.kept.filter((x) => x.type === k).length; if (out.report.skipped[k]) { out.report.skipped[k] -= n; if (out.report.skipped[k] <= 0) delete out.report.skipped[k]; } }
+      out.report.notes.push(t('ccacis.app.kept', { n: s.kept.length }));
+    }
+    if (s.inBlocks) out.report.notes.push(t('ccacis.app.blocks', { n: s.inBlocks }));
+  }
   split3d(out);   // 3DFACEs → out.faces3d (the 3D tab), never 2D objects
   return out;
 
@@ -140,6 +164,7 @@ export function readDxf(text) {
       if (c === 9) varName = v.trim();
       else {
         if (varName === '$ACADVER' && c === 1) out.meta.version = v.trim();
+        else if (varName === '$DWGCODEPAGE' && c === 3) dxfCodepage = v.trim();
         else if (varName === '$INSUNITS' && c === 70) out.meta.units = UNITS[+v] || '';
         else if (varName === '$LTSCALE' && c === 40 && parseFloat(v) > 0 && parseFloat(v) !== 1) out.meta.ltscale = parseFloat(v);
         else if (varName === '$LUNITS' && c === 70 && +v >= 1 && +v <= 5 && +v !== 2) out.meta.lunits = +v;   // the length format (units.js codes)
@@ -235,6 +260,7 @@ export function readDxf(text) {
         if (at()[1].trim() === 'ENDBLK') { i++; group(); }
         if (isParamBlock(name)) { out.parametric = parametricText(ents); continue; }   // CadCraft's constraints (gcons.js)
         if (isStyleBlock(name)) { const ps = payloadFrom(ents); if (ps) out.plotStyles = ps; continue; }   // plot style tables (0.6 DC.14)
+        if (isLaserBlock(name)) { const lz = laserFromPayload(ents); if (lz) out.laser = lz; continue; }   // the Laser panel's settings (0.7 SU.772)
         if (isGeoBlock(name)) { geoOwn = geoFromPayload(ents); continue; }   // the coordinate system and map layers (0.6 GEO-DWG)
         if (isM3dBlock(name)) { const t = read3dText(ents); if (t) out.model3d = t; const v = read3dView(ents); if (v) out.view3d = v; continue; }   // CadCraft's 3D model and its view (model3d.js)
         if (/^\*paper_space\d+$/i.test(name)) { paperBlocks.set(name.toUpperCase(), ents); continue; }
@@ -262,6 +288,14 @@ export function readDxf(text) {
           paperMm: { w: num(pg, 44), h: num(pg, 45) }, units: parseInt(val(pg, 72) ?? '-1', 10), rot: parseInt(val(pg, 73) ?? '0', 10),
           styleSheet: String(val(pg, 7) || '').trim().slice(0, 64),
         });
+      } else if (at()[0] === 0 && at()[1].trim() === 'PDFDEFINITION') {   // a PDF underlay's file and page (0.7 D7.24)
+        i++;
+        const g = group();
+        pdfDefsH.set((val(g, 5) || '').toUpperCase(), { file: decodeText(val(g, 1) || ''), page: val(g, 2) || '1' });
+      } else if (at()[0] === 0 && at()[1].trim() === 'SCALE') {   // one scale of the drawing's list (0.7 D7.19)
+        i++;
+        const g = group();
+        scalesIn.push({ name: decodeText(val(g, 300) || ''), paper: parseFloat(val(g, 140)), drawing: parseFloat(val(g, 141)), unit: val(g, 290) === '1' });
       } else if (at()[0] === 0 && at()[1].trim() === 'GEODATA') {   // a drawing's geographic location (0.6 GEO-DWG)
         i++;
         const got = fromDxfGroup(group(), decodeText);
@@ -283,6 +317,48 @@ export function readDxf(text) {
       } else i++;
     }
     i++;
+  }
+
+  /** PDF underlays (0.7 D7.24): each PDFUNDERLAY read from ENTITIES becomes a reference to an underlay block. */
+  function resolvePdfs() {
+    const lists = [out.entities, paperRaw, ...paperBlocks.values(), ...out.blocks.map((b) => b.entities), ...out.layouts.map((l) => l.entities)];
+    const taken = new Set(out.blocks.map((b) => b.name.toUpperCase()));
+    let n = 0;
+    for (const list of lists) for (let k = 0; k < (list || []).length; k++) {
+      const e = list[k];
+      if (!e || e.type !== 'pdfraw') continue;
+      const def = pdfDefsH.get(e.def) || {};
+      let name; do name = '*P' + (++n); while (taken.has(name));
+      taken.add(name);
+      const { block, insert } = underlayParts({ file: def.file, page: def.page, insertion: e.insertion, scale: e.scale, rotation: e.rotation, flags: e.flags, contrast: e.contrast, fade: e.fade, clip: e.clip }, name);
+      out.blocks.push(block);
+      const { layer, color } = e;
+      list[k] = { ...insert, layer, color };
+      out.report.pdfs = (out.report.pdfs || 0) + 1;
+    }
+    if (out.report.pdfs) out.report.notes.push(t('dwg.read.pdfs', { n: out.report.pdfs }));
+  }
+
+  /** OLE objects (0.7 D7.23): each OLE2FRAME read from ENTITIES becomes a reference to a frame block (ole.js oleParts). */
+  function resolveOle() {
+    const lists = [out.entities, paperRaw, ...paperBlocks.values(), ...out.blocks.map((b) => b.entities), ...out.layouts.map((l) => l.entities)];
+    const taken = new Set(out.blocks.map((b) => b.name.toUpperCase()));
+    let n = 0;
+    for (const list of lists) for (let k = 0; k < (list || []).length; k++) {
+      const e = list[k];
+      if (!e || e.type !== 'oleraw') continue;
+      let name; do name = '*O' + (++n); while (taken.has(name));
+      taken.add(name);
+      const data = new Uint8Array(e.hex.length / 2);
+      for (let i = 0; i < data.length; i++) data[i] = parseInt(e.hex.slice(2 * i, 2 * i + 2), 16);
+      const { block, insert, picture } = oleParts({ p1: e.p1, p2: e.p2, kind: e.kind, tile: e.tile, title: e.title, data }, name);
+      out.blocks.push(block);
+      if (picture) (out.pictures ||= []).push(picture);
+      const { layer, color } = e;
+      list[k] = { ...insert, layer, color };
+      out.report.oles = (out.report.oles || 0) + 1;
+    }
+    if (out.report.oles) out.report.notes.push(t('dwg.read.oles', { n: out.report.oles }));
   }
 
   /** XCLIP (WL.16): each reference that names an extension dictionary → ACAD_FILTER → SPATIAL gets its clip. */
@@ -576,6 +652,7 @@ function entityFrom(type, g, follow, rep, ctx) {
     const ds = val(g, 3);
     if (ds && !/^standard$/i.test(ds)) add.dimstyle = ds;
     if (num(g, 53)) add.trot = normAngle(rad(num(g, 53)));
+    if (!((parseInt(val(g, 70) ?? '0', 10)) & 6) && num(g, 52)) add.obl = normAngle(rad(num(g, 52)));   // linear / aligned: the extension lines' angle (0.7 D7.14)
   }
   if (type === 'VIEWPORT') {
     const stt = parseInt(val(g, 90) ?? '0', 10) >>> 0;
@@ -622,7 +699,8 @@ function entityFrom0(type, g, follow, rep, ctx) {
       }
       if (!wide) for (const p of pts) { delete p.sw; delete p.ew; }
       const cw = num(g, 43);
-      return pts.length >= 2 ? { type: 'poly', ...base, pts, closed: (parseInt(val(g, 70) ?? '0', 10) & 1) === 1, ...(cw > 0 && !wide ? { w: cw } : {}) } : null;
+      const f70 = parseInt(val(g, 70) ?? '0', 10) | 0;   // 1 closed, 128 linetype generation (off: the pattern starts again at every vertex)
+      return pts.length >= 2 ? { type: 'poly', ...base, pts, closed: (f70 & 1) === 1, ...(cw > 0 && !wide ? { w: cw } : {}), ...(f70 & 128 ? {} : { lgen: false }) } : null;
     }
     case 'POLYLINE': {
       const flags = parseInt(val(g, 70) ?? '0', 10);
@@ -659,8 +737,9 @@ function entityFrom0(type, g, follow, rep, ctx) {
       let s = '';
       for (const [c, v] of g) if (c === 3) s += v;
       s += val(g, 1) ?? '';
-      s = mtextPlain(s);
-      if (!s) return null;
+      const rich = mtextRich(s);   // inline codes beyond \P and the oblique angle: kept as `mt` (mtext.js, 0.7 D7.17)
+      s = rich ? rich.s : mtextPlain(s);
+      if (!s.trim()) return null;
       const att = parseInt(val(g, 71) ?? '1', 10) || 1;
       let rot = rad(num(g, 50));
       if (val(g, 11) !== undefined) rot = Math.atan2(num(g, 21), num(g, 11));
@@ -668,7 +747,7 @@ function entityFrom0(type, g, follow, rep, ctx) {
       return {
         type: 'text', ...base, x: num(g, 10), y: num(g, 20), h: num(g, 40, 2.5) || 2.5, rot: normAngle(rot), s,
         ha: ['left', 'center', 'right'][(att - 1) % 3], va: ['top', 'middle', 'bottom'][Math.floor((att - 1) / 3)],
-        ...(ww > 0 ? { ww } : {}), ...(ls > 0 && ls !== 1 ? { ls } : {}),
+        ...(ww > 0 ? { ww } : {}), ...(ls > 0 && ls !== 1 ? { ls } : {}), ...(rich ? { mt: rich.mt } : {}),
         ...maskOf({ backgroundFlags: parseInt(val(g, 90) ?? '0', 10), backgroundScale: num(g, 45, 1.5),
           backgroundColor: val(g, 421) !== undefined ? { rgb: parseInt(val(g, 421), 10) } : { index: parseInt(val(g, 63) ?? '7', 10) } }),   // background mask (WL.8)
       };
@@ -677,11 +756,15 @@ function entityFrom0(type, g, follow, rep, ctx) {
       const t0 = num(g, 41, 0), t1 = num(g, 42, TAU);
       return { type: 'ellipse', ...base, cx: num(g, 10), cy: num(g, 20), mx: num(g, 11), my: num(g, 21), ratio: num(g, 40, 1), t0, t1 };
     }
-    case 'SPLINE': {
-      const pts = splinePoints(g);
-      if (pts.length < 2) { skip(rep, 'SPLINE'); return null; }
+    case 'SPLINE': {   // a real spline (0.7 D7.10, spline.js)
+      const pt = (c) => { const out = []; for (let k = 0; k < g.length; k++) if (g[k][0] === c) { let y = 0; for (let m = k + 1; m < g.length && m <= k + 2; m++) if (g[m][0] === c + 10) { y = parseFloat(g[m][1]); break; } out.push({ x: parseFloat(g[k][1]), y }); } return out; };
+      const flags = parseInt(val(g, 70) ?? '0', 10);
+      const sp = splineFromFile({ degree: parseInt(val(g, 71) ?? '3', 10), closed: !!(flags & 1), periodic: !!(flags & 2), ctrl: pt(10), fit: pt(11),
+        knots: g.filter(([c]) => c === 40).map(([, v]) => parseFloat(v)), weights: g.filter(([c]) => c === 41).map(([, v]) => parseFloat(v)),
+        st: val(g, 12) !== undefined ? { x: num(g, 12), y: num(g, 22) } : null, et: val(g, 13) !== undefined ? { x: num(g, 13), y: num(g, 23) } : null });
+      if (!sp) { skip(rep, 'SPLINE'); return null; }
       rep.splines = (rep.splines || 0) + 1;
-      return { type: 'poly', ...base, pts: pts.map((p) => ({ ...p, b: 0 })), closed: false };
+      return { ...sp, ...base };
     }
     case 'SOLID': case 'TRACE': {
       const c = [[10, 20], [11, 21], [13, 23], [12, 22]].map(([a, b]) => [num(g, a), num(g, b)]);
@@ -742,16 +825,29 @@ function entityFrom0(type, g, follow, rep, ctx) {
       if (!blockName) { skip(rep, 'DIMENSION'); return null; }
       return { type: 'insert', ...base, block: blockName, x: 0, y: 0, sx: 1, sy: 1, rot: 0, dim: true };
     }
+    case 'OLE2FRAME': {   // an embedded object (0.7 D7.23): its corners and OLE2 data; resolved to a frame (resolveOle)
+      const hex = g.filter(([c]) => c === 310).map(([, v]) => v.trim()).join('');
+      if (!hex || !/^[0-9a-fA-F]+$/.test(hex) || hex.length % 2 || hex.length > 128e6) { skip(rep, 'OLE2FRAME'); return null; }
+      return { type: 'oleraw', ...base, p1: { x: num(g, 10), y: num(g, 20) }, p2: { x: num(g, 11), y: num(g, 21) }, kind: parseInt(val(g, 71) ?? '2', 10), tile: parseInt(val(g, 72) ?? '0', 10), title: decodeText(val(g, 3) || ''), hex };
+    }
+    case 'PDFUNDERLAY': {   // 0.7 D7.24: resolved with its PDFDEFINITION once the OBJECTS are read (resolvePdfs)
+      const clip = [];
+      for (let k = 0; k + 1 < g.length; k++) if (g[k][0] === 11 && g[k + 1][0] === 21) clip.push({ x: parseFloat(g[k][1]), y: parseFloat(g[k + 1][1]) });
+      return { type: 'pdfraw', ...base, def: (val(g, 340) || '').toUpperCase(), insertion: { x: num(g, 10), y: num(g, 20) }, scale: { x: num(g, 41, 1) || 1, y: num(g, 42, 1) || 1 }, rotation: rad(num(g, 50, 0)), flags: parseInt(val(g, 280) ?? '2', 10), contrast: num(g, 281, 50), fade: num(g, 282, 0), clip };
+    }
     case 'VIEWPORT': {
       const v = { type: 'viewport', ...base, x: num(g, 10), y: num(g, 20), w: num(g, 40), h: num(g, 41), id: parseInt(val(g, 69) ?? '0', 10) };
       let vc = null, vh = 0;
-      if (val(g, 45) !== undefined) { vh = num(g, 45); vc = { x: num(g, 12) + num(g, 17), y: num(g, 22) + num(g, 27) }; }
+      // the view centre is in display coordinates, turned by the twist (geom.js vpModelCentre, CAD-TWIST-SAVE)
+      const tw0 = val(g, 51) !== undefined ? rad(num(g, 51)) : (xlist(xd.ACAD, 'MVIEW') || []).filter(([c]) => c === 1040).map(([, x]) => +x)[0];
+      const twc = Number.isFinite(tw0) ? tw0 : 0;
+      if (val(g, 45) !== undefined) { vh = num(g, 45); vc = vpModelCentre({ x: num(g, 12), y: num(g, 22) }, { x: num(g, 17), y: num(g, 27) }, twc); }
       else {
         const mv = xlist(xd.ACAD, 'MVIEW');   // R12: 1070 16, target (1010…), direction, then 1040 twist, height, centre x, centre y, …
         if (mv) {
           const reals = mv.filter(([c]) => c === 1040).map(([, x]) => +x);
           const tgt = mv.find(([c]) => c === 1010), tgy = mv.find(([c]) => c === 1020);
-          vh = reals[1]; vc = { x: reals[2] + (tgt ? +tgt[1] : 0), y: reals[3] + (tgy ? +tgy[1] : 0) };
+          vh = reals[1]; vc = vpModelCentre({ x: reals[2], y: reals[3] }, { x: tgt ? +tgt[1] : 0, y: tgy ? +tgy[1] : 0 }, twc);
           const frz = mv.filter(([c]) => c === 1003).map(([, n]) => n).filter(Boolean);   // R12: the frozen layers' names (VP.1)
           if (frz.length) v.frz = [...new Set(frz)];
         }
@@ -759,8 +855,7 @@ function entityFrom0(type, g, follow, rep, ctx) {
       const fh = g.filter(([c]) => c === 331).map(([, x]) => x.trim()).filter(Boolean);   // DXF 2000+: frozen layers' handles, named in buildLayouts
       if (fh.length) v._frzH = fh;
       if (vc && vh > 0 && v.h > 0) { v.cx = vc.x; v.cy = vc.y; v.s = v.h / vh; } else { v.cx = v.x; v.cy = v.y; v.s = 1; }
-      { const tw = val(g, 51) !== undefined ? rad(num(g, 51)) : (xlist(xd.ACAD, 'MVIEW') || []).filter(([c]) => c === 1040).map(([, x]) => +x)[0];   // its twist (DR.8)
-        if (Number.isFinite(tw) && Math.abs(tw) > 1e-12) v.tw = tw; }
+      if (Math.abs(twc) > 1e-12) v.tw = twc;   // its twist (DR.8)
       if (cc && cc[0] === 'LAYOUT') { v.overall = true; v.cc = { name: decodeText(cc[1] || ''), unit: cc[2] === 'in' ? 'in' : 'mm', key: cc[3], x0: +cc[4], y0: +cc[5], w: +cc[6], h: +cc[7], noplot: cc[8] === 'NOPLOT' ? cc.slice(9) : [] }; }
       return v;
     }
@@ -780,10 +875,18 @@ function dimUsable(d) {
   return far(d.c, d.p1) && far(d.c, d.p2) && far(d.c, d.loc);
 }
 
-/** DXF text escapes: %%c ⌀, %%d °, %%p ±, %%u/%%o toggles dropped, \U+XXXX. */
+/** DXF text escapes: %%c ⌀, %%d °, %%p ±, %%u/%%o toggles dropped, \U+XXXX and \M+ (dxf-decode.js). */
 function decodeText(s) {
-  return s.replace(/%%[cC]/g, '⌀').replace(/%%[dD]/g, '°').replace(/%%[pP]/g, '±').replace(/%%[uUoOkK]/g, '').replace(/%%%/g, '%')
-    .replace(/\\U\+([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+  return unescapeText(s.replace(/%%[cC]/g, '⌀').replace(/%%[dD]/g, '°').replace(/%%[pP]/g, '±').replace(/%%[uUoOkK]/g, '').replace(/%%%/g, '%'), dxfCodepage);
+}
+let dxfCodepage = '';   // the file being read: its $DWGCODEPAGE, for \M+ escapes
+
+/** MTEXT with inline formatting (fonts, colours, stacked fractions …) → { s: plain text, mt: the string with its codes } for
+ *  a text object that keeps them (mtext.js, 0.7 D7.17); null when there is nothing beyond line breaks (mtextPlain then). */
+export function mtextRich(raw) {
+  if (!hasFormatting(raw)) return null;
+  const mt = decodeText(raw);
+  return { s: plainOf(mt), mt };
 }
 
 /** MTEXT formatting codes → plain text with \n line breaks. */
@@ -946,6 +1049,8 @@ export function writeDxf(doc) {
   if (pf) used.add(PARAM_BLOCK);
   const psPts = payloadStrings(doc);   // plot style tables (0.6 DC.14): block CADCRAFT_PLOTSTYLES
   if (psPts) used.add(STYLE_BLOCK);
+  const lzPts = laserPayload(doc);   // the Laser panel's settings (0.7 SU.772): block CADCRAFT_LASER
+  if (lzPts) used.add(LASER_BLOCK);
   const geoPts = geoPayload(doc);   // the coordinate system and map layers (0.6 GEO-DWG): block CADCRAFT_GEO (R12 has no GEODATA)
   if (geoPts) used.add(GEO_BLOCK);
   const m3 = forFile3d(doc);   // the 3D model (model3d.js): 3DFACEs on layer CC-3D + its exact copy in block CADCRAFT_3D
@@ -953,7 +1058,7 @@ export function writeDxf(doc) {
   const noPlot = [...doc.layers.values()].filter((l) => l.plot === false).map((l) => layerName(l.name));
 
   const colorCode = (c) => (c === null || c === undefined ? null : c === 0 ? 0 : typeof c === 'string' ? (note('truecolor'), nearestAci(c)) : c);
-  const st = { ...DIM_DEFAULTS, ...doc.current.dim };
+  const st = { ...DIM_DEFAULTS, ...standardSt(doc) };   // Standard, wherever it is while another style is current (dimstyles.js)
   const first = doc.layouts[0] || null;
 
   // HEADER
@@ -1105,7 +1210,7 @@ export function writeDxf(doc) {
     if (!blockNames.has(b.name)) continue;
     const link = isXrefRoot(b) && !b.entities.length ? b.xref.path || b.name : null;
     if (link !== null) note('xrefLink'); else if (isXrefRoot(b)) note('xrefBound');
-    block(blockNames.get(b.name), b.base, b.entities, null, b.attdefs, link);
+    block(blockNames.get(b.name), b.base, b.entities, null, b.attdefs?.map((d, j) => (attdefHidden(b, j) ? { ...d, hidden: true } : d)), link);
   }
   for (const d of dimBlocks) block(d.name, { x: 0, y: 0 }, d.entities);
   if (pf) block(PARAM_BLOCK, { x: 0, y: 0 }, [], () => {
@@ -1116,6 +1221,9 @@ export function writeDxf(doc) {
   });
   if (psPts) block(STYLE_BLOCK, { x: 0, y: 0 }, [], () => {
     for (const strs of psPts) { w(0, 'POINT'); w(8, '0'); w(10, '0.0'); w(20, '0.0'); w(30, '0.0'); w(1001, 'CADCRAFT'); for (const t of strs) w(1000, t); }
+  });
+  if (lzPts) block(LASER_BLOCK, { x: 0, y: 0 }, [], () => {
+    for (const strs of lzPts) { w(0, 'POINT'); w(8, '0'); w(10, '0.0'); w(20, '0.0'); w(30, '0.0'); w(1001, 'CADCRAFT'); for (const t of strs) w(1000, t); }
   });
   if (m3) block(M3D_BLOCK, { x: 0, y: 0 }, [], () => {
     for (const strs of m3.points) { w(0, 'POINT'); w(8, '0'); w(10, '0.0'); w(20, '0.0'); w(30, '0.0'); w(1001, 'CADCRAFT'); for (const t of strs) w(1000, t); }
@@ -1147,6 +1255,7 @@ export function writeDxf(doc) {
   w(0, 'EOF');
 
   if (report.counts.renamed) report.notes.push(t('dxf.save.renamed', { n: report.counts.renamed }));
+  if (doc.solids?.length) report.notes.push(t('ccacis.app.dxf', { n: doc.solids.length }));   // 0.7 D7.25: R12 has no 3D solids
   if (report.counts.infinite) report.notes.push(t('dxf.save.infinite', { n: report.counts.infinite }));
   { const n = [...doc.model.values(), ...doc.layouts.flatMap((l) => [...l.entities.values()])].filter((e) => e.type === 'insert' && e.clip?.pts?.length >= 3).length; if (n) report.notes.push(t('dxf.save.xclip', { n })); }   // WL.16: R12 has no clips
   { const n = doc.layouts.reduce((k, l) => k + [...l.entities.values()].filter((e) => e.type === 'viewport' && e.lov && Object.keys(e.lov).length).length, 0); if (n) report.notes.push(t('dxf.save.vpovr', { n })); }   // VP.3: DWG only
@@ -1154,6 +1263,7 @@ export function writeDxf(doc) {
   if (report.counts.truecolor) report.notes.push(t('dxf.true_colours_were_saved'));
   if (report.counts.hatch) report.notes.push(t('dxf.save.hatch', { n: report.counts.hatch }));
   if (report.counts.ellipse) report.notes.push(t('dxf.save.ellipse', { n: report.counts.ellipse }));
+  if (report.counts.spline) report.notes.push(t('dxf.save.spline', { n: report.counts.spline }));
   if (report.counts.mtext) report.notes.push(t('dxf.multi_line_text_was'));
   if (report.counts.textmask) report.notes.push(t('dxf.save.textmask', { n: report.counts.textmask }));
   if (report.counts.longattr) report.notes.push(t('dxf.save.longattr', { n: report.counts.longattr }));
@@ -1192,7 +1302,8 @@ export function writeDxf(doc) {
     w(1001, 'ACAD'); w(1000, 'MVIEW'); w(1002, '{'); w(1070, 16);
     w(1010, '0.0'); w(1020, '0.0'); w(1030, '0.0');
     w(1010, '0.0'); w(1020, '0.0'); w(1030, '1.0');
-    w(1040, f(Number.isFinite(e.tw) ? e.tw : 0)); w(1040, f(e.h / e.s)); w(1040, f(e.cx)); w(1040, f(e.cy));   // twist (radians, DR.8), height, centre
+    const tw = Number.isFinite(e.tw) ? e.tw : 0, dc = vpDcsCentre(e.cx, e.cy, tw);   // the centre in display coordinates (CAD-TWIST-SAVE)
+    w(1040, f(tw)); w(1040, f(e.h / e.s)); w(1040, f(dc.x)); w(1040, f(dc.y));   // twist (radians, DR.8), height, centre
     w(1040, '50.0'); w(1040, '0.0'); w(1040, '0.0');
     w(1070, 0); w(1070, 100); w(1070, 1); w(1070, 3); w(1070, 0); w(1070, 0); w(1070, 0); w(1070, 0);
     w(1040, '0.0'); w(1040, '0.0'); w(1040, '0.0'); w(1040, '1.0'); w(1040, '1.0'); w(1040, '1.0'); w(1040, '1.0');
@@ -1257,7 +1368,7 @@ export function writeDxf(doc) {
     w(10, f(t.x)); w(20, f(t.y)); w(30, '0.0'); w(40, f(t.h)); w(1, attrValue(t.s));
     if (d) w(3, attrValue(d.prompt || ''));
     w(2, encodeText(t.tag || 'TAG'));
-    w(70, (t.invisible ? 1 : 0) | (d?.constant ? 2 : 0) | (d?.preset ? 8 : 0));
+    w(70, (t.invisible || t.hidden ? 1 : 0) | (d?.constant ? 2 : 0) | (d?.preset ? 8 : 0));   // hidden: by its dynamic block's state (DXF keeps that state only)
     if (t.rot) w(50, f(deg(t.rot)));
     if (t.wf && t.wf !== 1) w(41, f(t.wf));
     const h72 = t.ha === 'center' ? 1 : t.ha === 'right' ? 2 : 0;
@@ -1284,10 +1395,12 @@ export function writeDxf(doc) {
       case 'linear': case 'aligned': {
         const r = e.kind === 'aligned' ? Math.atan2(e.p2.y - e.p1.y, e.p2.x - e.p1.x) : (e.rot || 0);
         const u = { x: Math.cos(r), y: Math.sin(r) }, d2 = (e.p2.x - e.loc.x) * u.x + (e.p2.y - e.loc.y) * u.y;
-        xy(10, { x: e.loc.x + u.x * d2, y: e.loc.y + u.y * d2 }); xy(11, tp); w(70, e.kind === 'aligned' ? 1 : 0);
+        const { q2 } = dimLinePoints(e);
+        xy(10, q2); xy(11, tp); w(70, e.kind === 'aligned' ? 1 : 0);
         if (e.text) w(1, encodeText(e.text));
         xy(13, e.p1); xy(14, e.p2);
         if (e.kind === 'linear') w(50, f(deg(normAngle(e.rot || 0))));
+        if (Number.isFinite(e.obl) && e.obl) w(52, f(deg(normAngle(e.obl))));   // slanted extension lines (0.7 D7.14)
         break;
       }
       case 'radius': case 'diameter': {
@@ -1333,6 +1446,7 @@ export function writeDxf(doc) {
       case 'arc': head('ARC', e, o); w(10, f(e.cx)); w(20, f(e.cy)); w(30, zf(e.z)); w(40, f(e.r)); w(50, f(deg(normAngle(e.a0)))); w(51, f(deg(normAngle(e.a1)))); grow(e.cx - e.r, e.cy - e.r, o); grow(e.cx + e.r, e.cy + e.r, o); xd(e, o); break;
       case 'poly': polyline(e, e.pts, e.closed, o, () => xd(e, o)); for (const p of e.pts) grow(p.x, p.y, o); break;
       case 'ellipse': note('ellipse'); polyline(e, ellipsePoints(e).map((p) => ({ ...p, b: 0 })), e.t1 - e.t0 >= TAU - 1e-9, o); break;
+      case 'spline': { if (!splineValid(e)) break; note('spline'); const pts = splinePolyline(e, 10).map((p) => ({ ...p, b: 0 })); if (pts.length >= 2) polyline(e, pts, !!e.closed, o); break; }   // R12 has no SPLINE: a polyline along the curve
       case 'hatch': {
         if (e.wipe) break;   // a dimension's text background: DIMTFILL says it
         const rings = e.loops.map((l) => { const pts = []; for (let k = 0; k + 1 < l.length; k += 2) pts.push({ x: l[k], y: l[k + 1], b: 0 }); return pts; });

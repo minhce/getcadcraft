@@ -518,12 +518,13 @@ export function activate(api) {
     const a = have?.e.attrs || {};
     const desc = await ask('desc', a.DESC || '');
     const breaker = await ask('breaker', a.BREAKER || '16');
+    const rcd = await ask('rcd', a.RCD || '');
     const phase = (await ask('phase', a.PHASE || 'L1')).toUpperCase();
     const board = await ask('board', a.BOARD || (inst.boards[0]?.tag || ''));
     let at = have ? null : await c.point(t('ask.circuit.at'));
     if (!have && (!at || at.option)) return;
     const sc = Number(settings.planScale) > 0 ? Number(settings.planScale) : defaultScale(doc.meta.units);
-    doc.change('ELCIRCUIT', () => defineCircuit(doc, doc.entities, at, { CIRCUIT: name, DESC: desc, BREAKER: breaker, PHASE: phase, BOARD: board }, sc, have));
+    doc.change('ELCIRCUIT', () => defineCircuit(doc, doc.entities, at, { CIRCUIT: name, DESC: desc, BREAKER: breaker, RCD: rcd, PHASE: phase, BOARD: board }, sc, have));
     lastOf.circuit = name;
     c.print(t('done.circuit', { circuit: name }));
   });
@@ -700,7 +701,7 @@ export function activate(api) {
     if (role === 'install') return [attr('CIRCUIT'), attr('LOAD', 'num', { min: 0 }), attr('TAG'), attr('DESC'), attr('MFR'), attr('PART')];
     if (role === 'board') return [attr('TAG'), attr('DESC'), attr('VOLTAGE', 'num', { min: 0 })];
     if (role === 'circuit') return [attr('CIRCUIT'), attr('DESC'), attr('BOARD'), attr('BREAKER', 'num', { min: 0 }), attr('CURVE', 'choice', { choices: () => ['B', 'C', 'D', 'K', 'Z', ''].map((v) => [v, v || t('none')]) }),
-      attr('PHASE', 'choice', { choices: () => [...PHASES, 'L1L2', 'L2L3', 'L1L3', '3P'].map((v) => [v, v]) }), attr('VOLTAGE', 'num', { min: 0 }), attr('PF', 'num', { min: 0.1, max: 1 }), attr('CABLE')];
+      attr('PHASE', 'choice', { choices: () => [...PHASES, 'L1L2', 'L2L3', 'L1L3', '3P'].map((v) => [v, v]) }), attr('VOLTAGE', 'num', { min: 0 }), attr('PF', 'num', { min: 0.1, max: 1 }), attr('CABLE'), attr('RCD')];
     return [];
   }
 

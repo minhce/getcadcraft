@@ -23,6 +23,7 @@
 
 import { Doc } from './doc.js';
 import { readDxf, writeDxf } from './dxf.js';
+import { decodeDxfBytes } from './dxf-decode.js';
 import { importDwg } from './dwg-import.js';
 import { saveDwg, dwgVersionKey } from './dwg-save.js';
 import { writeDxf2000 } from './dxf2000.js';
@@ -43,9 +44,7 @@ export async function openDrawing(folder, path, { readDwg = defaultRead } = {}) 
   const doc = new Doc();
   const name = path.split('/').pop().replace(/\.[^.]+$/, '');
   if (/\.dxf$/i.test(path)) {
-    let text = new TextDecoder('utf-8').decode(bytes);
-    if (text.includes('�')) text = new TextDecoder('windows-1252').decode(bytes);
-    const d = readDxf(text);
+    const d = readDxf(decodeDxfBytes(bytes).text);
     doc.load({ ...d, meta: { ...d.meta, name, source: path.split('/').pop() } });
     doc.markSaved();
     return { doc, format: d.meta.version === 'AC1009' || !d.meta.version ? 'dxf' : 'dxf2000', version: d.meta.version || '' };

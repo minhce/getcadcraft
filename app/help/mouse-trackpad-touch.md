@@ -19,22 +19,22 @@ CadCraft is designed for a mouse with a wheel. Everything also works with a trac
 ## Trackpad
 
 :::mac
-- **Zoom:** scroll with two fingers, up and down. Pinching also zooms in Chrome, Edge and Firefox.
+- **Pan:** move two fingers on the trackpad, in any direction: the drawing follows your fingers. You can also drag with a two-finger click held down (a right-button drag).
+- **Zoom:** pinch with two fingers. Zooming follows the crosshair.
 - **Right-click (Enter):** click with two fingers. Turn on "Secondary click" in **System Settings**, then **Trackpad**, if it does nothing. Control-click may count as an ordinary click in CadCraft rather than a right-click, so use the two-finger click.
-- **Pan:** there is no middle button. Zoom out with a two-finger scroll, point at the area you want, and zoom back in: zooming follows the crosshair, so this moves you across the drawing. You can also drag with a two-finger click held down (a right-button drag).
 - **Zoom to an area:** click {{ui:Window}} in the View group and click two corners.
 :::
 
 :::windows linux
-- **Zoom:** scroll with two fingers, up and down.
+- **Pan:** move two fingers on the touchpad, in any direction: the drawing follows your fingers. You can also drag with the right button held down.
+- **Zoom:** pinch with two fingers. Zooming follows the crosshair.
 - **Right-click (Enter):** click with two fingers, or click the lower-right corner of the touchpad, depending on your touchpad settings.
-- **Pan:** there is usually no middle button. Zoom out with a two-finger scroll, point at the area you want, and zoom back in: zooming follows the crosshair, so this moves you across the drawing. You can also drag with the right button held down.
 - **Zoom to an area:** click {{ui:Window}} in the View group and click two corners.
 :::
 
 Holding {{key:Space}} and dragging does **not** pan in CadCraft: {{key:Space}} is Enter.
 
-Sideways two-finger scrolling does nothing; only up and down zooms.
+A mouse wheel still zooms, one step at a time. A touchpad that sends its scrolling in whole steps, as a wheel does, zooms with a two-finger scroll instead of panning: zoom out, point at the area you want and zoom back in. The 3D tab keeps its own trackpad moves (see [Model in 3D](topic:3d-solids#look-around)).
 
 ## Touch screens and tablets
 

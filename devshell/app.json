@@ -20,17 +20,19 @@
     },
     "vendor": {
         "laz-perf": "0.0.7",
+        "liberation-sans": "2.1.5",
         "manifold-3d": "3.5.4",
         "noble-ciphers": "2.4.0",
         "noble-curves": "2.4.0",
         "noble-hashes": "2.4.0",
+        "pdfjs": "6.3.289",
         "proj4": "2.22.0",
         "three": "0.186.1",
         "web-e57": "1.2.0"
     },
     "origin": "https://getcadcraft.com",
     "packed": {
-        "at": "2026-10-19T00:34:28Z",
+        "at": "2026-10-25T02:46:09Z",
         "build": "dev"
     }
 }

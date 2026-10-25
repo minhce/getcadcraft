@@ -38,6 +38,14 @@ From now on it loads by itself whenever CadCraft starts in this browser. To stop
 
 The Startup Suite keeps a copy of each file in this browser's storage. If you change the routine, load the new file and add it again.
 
+## Load acad.lsp and acaddoc.lsp from a support folder (Studio)
+
+In CadCraft Studio, {{ui:Support folder}} in the {{ui:Load applications}} dialog takes a folder on your computer. Click {{ui:Choose folder…}}. When CadCraft starts it reads `acad.lsp` and then `acaddoc.lsp` from that folder (whatever the case of the names), loads them, and then loads the Startup Suite. `acaddoc.lsp` is read again each time a new drawing tab opens. Nothing else in the folder is read, and a file over 2 MB is skipped with a message.
+
+If a file defines a function named `S::STARTUP`, it runs once after the files are loaded (also after the Startup Suite). {{ui:Load now}} does the same on request; {{ui:Clear}} forgets the folder.
+
+In the browser a page cannot keep a folder, so there is no support folder: use the Startup Suite above. Compiled `.fas` and `.vlx` files and native programs stay refused.
+
 ## Load a file again from the history
 
 {{ui:History}} lists the files you loaded in this browser, newest first. Click {{ui:Load}} beside one to load it again, without looking for it on your computer.

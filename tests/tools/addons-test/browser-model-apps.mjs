@@ -107,7 +107,7 @@ try {
     console.log('\nBimCraft');
     await page.goto('https://getcadcraft.com/lab/bimcraft', { waitUntil: 'load' });
     await ready();
-    ok(await page.evaluate(() => !document.getElementById('cc-addons') && window.ccAddons.list().length === 0 && !document.querySelector('[data-addon], [data-addon-props], [data-addon-exports]')), 'its own loader starts (no shell loader); nothing installed, nothing shown');
+    ok(await page.evaluate(() => !document.getElementById('cc-addons') && window.ccAddons.list().every((a) => a.source === 'bundled' && a.state === 'off') && !document.querySelector('[data-addon]:not(.shell-addon), [data-addon-props], [data-addon-exports]')), 'its own loader starts (no shell loader); nothing installed (a bundled add-on that is off, like Plant, is only listed), nothing shown');
     await install(pkgOf(path.join(ROOT, 'tools/addons-test/bimcraft/tagger')));
     ok(await page.evaluate(() => window.ccAddons.list().find((a) => a.id === 'zz-test.tagger')?.state === 'active'), 'the fixture add-on installed in developer mode is active after a reload');
     const waitStatus = (re) => page.waitForFunction((src) => new RegExp(src).test(document.querySelector('[data-status]')?.textContent || ''), re.source, { timeout: 60000 });

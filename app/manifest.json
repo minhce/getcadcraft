@@ -1,19 +1,27 @@
 {
   "app": "cadcraft",
   "css": [
-    "cadcraft.css"
+    "cadcraft.css",
+    "laser/laser-panel.css"
   ],
   "module": "cadcraft.js",
   "imports": {
     "three": "/assets/vendor/three/current/three.module.js",
+    "pdfjs-dist": "/assets/vendor/pdfjs/current/build/pdf.min.mjs",
     "manifold-3d": "/assets/vendor/manifold-3d/current/manifold.js",
     "proj4": "/assets/vendor/proj4/current/proj4.esm.min.js",
     "laz-perf": "/assets/vendor/laz-perf/current/laz-perf.js",
     "web-e57/": "/assets/vendor/web-e57/current/",
+    "liberation-sans/": "/assets/vendor/liberation-sans/current/",
     "@noble/curves/": "/assets/vendor/noble-curves/current/",
     "@noble/hashes/": "/assets/vendor/noble-hashes/current/",
     "@noble/ciphers/": "/assets/vendor/noble-ciphers/current/"
   },
+  "pdfWorker": "/assets/vendor/pdfjs/current/build/pdf.worker.min.mjs",
+  "pdfCmaps": "/assets/vendor/pdfjs/current/cmaps/",
+  "pdfFonts": "/assets/vendor/pdfjs/current/standard_fonts/",
+  "pdfWasm": "/assets/vendor/pdfjs/current/wasm/",
+  "pdfIcc": "/assets/vendor/pdfjs/current/iccs/",
   "accepts": [
     "handoff",
     "live"
@@ -21,5 +29,13 @@
   "phone": true,
   "panels": ["move", "window"],
   "addons": "own",
-  "input": "input-cadcraft.js"
+  "input": "input-cadcraft.js",
+  "workspaces": {
+    "layouts": [
+      "docked",
+      "toolbox"
+    ],
+    "adapter": "workspace-cadcraft.js"
+  },
+  "hardware": true
 }

@@ -25,7 +25,11 @@
  *     out.picture(p)                  a picture (0.5 WL.14, pictures.js): { file, place: {x, y, ux, uy, vx, vy, w, h},
  *                                     clip: [x, y, …] (its frame), alpha } after the transform; its frame also comes as a
  *                                     stroke, and the file's name as text only while the file is not loaded
+ *     out.pdf(p)                      a PDF underlay (0.7 D7.24, pdfunder.js): { file, page, m: [a b c d e f] (the page's points →
+ *                                     drawing), w, h, clip: [x, y, …] (its frame), alpha, mono, contrast, layers: { id: bool } }
  *
+ * `penLt(color)` (0.7 DC.14, plot.js): the linetype a plot style table's pen gives that colour, or null; `ltTable`: the table's scale
+ * for the dashes of non-ISO linetypes.
  * `plot: true` also skips layers set not to plot. `frozen` (0.5 VP.1) = a Set of upper-case layer names frozen in the
  * viewport being drawn (a viewport's `frz`; `frozenSet(vp)`): skipped like a frozen layer. Colours are 'ink' or '#rrggbb'.
  * A block reference's attributes (geom.attrTexts) come out as text after its block; invisible
@@ -38,12 +42,14 @@ import { hatchLines } from './hatch.js';
 import { leaderGeometry } from './leader.js';
 import { resolveLt, resolveLw, patternOf, dashPrims } from './linetypes.js';
 import { findPicture } from './pictures.js';
+import { findPdf } from './pdfmodel.js';
+import { isIsoLinetype } from './plotstyle.js';
 import { clipOut, clipPoly } from './xclip.js';
 
 /** How strongly what is outside REFEDIT's working set is drawn (0.6 DF.5). */
 export const REF_FADE = 0.3;
 
-export function walk(doc, entities, out, { m = null, plot = false, frozen = null } = {}) {
+export function walk(doc, entities, out, { m = null, plot = false, frozen = null, penLt = null, ltTable = 1 } = {}) {
   // per-viewport layer overrides (VP.3, frozenSet(vp).ovr): the layers as that viewport shows them
   const ovr = frozen && frozen.ovr;
   if (ovr && ovr.size) {
@@ -65,8 +71,12 @@ export function walk(doc, entities, out, { m = null, plot = false, frozen = null
   const pattern = (name) => { if (!patterns.has(name)) patterns.set(name, patternOf(doc, name)); return patterns.get(name); };
   // lines in the object's own coordinates, dashed by its linetype there (so a scaled block scales its dashes), then placed
   const strokeOf = (e, ps, color, lw, mm, ctx, o) => {
-    const pat = pattern(resolveLt(doc, e, ctx.lt, ctx.layer));
-    const d = pat ? dashPrims(ps, pat, ltscale * (e.lts > 0 ? e.lts : 1)) : ps;
+    // a plot style table's pen may name another linetype for this colour (penLt, 0.7 DC.14) and scale the dashes of non-ISO ones (ltTable)
+    const ltName = (penLt && penLt(color)) || resolveLt(doc, e, ctx.lt, ctx.layer);
+    const pat = pattern(ltName);
+    const sc = ltscale * (e.lts > 0 ? e.lts : 1) * (pat && ltTable !== 1 && !isIsoLinetype(ltName) ? ltTable : 1);
+    // a polyline without linetype generation (lgen false, PLINEGEN off in the file) starts its pattern again at each vertex
+    const d = !pat ? ps : e.type === 'poly' && e.lgen === false && ps.length > 1 ? ps.flatMap((q) => dashPrims([q], pat, sc)) : dashPrims(ps, pat, sc);
     out.stroke(color, mm ? d.flatMap((q) => txPrim(q, mm)) : d, lw, o);
   };
   const txLoops = (loops, mm) => (mm ? loops.map((l) => { const o = []; for (let i = 0; i + 1 < l.length; i += 2) { const p = mApply(mm, { x: l[i], y: l[i + 1] }); o.push(p.x, p.y); } return o; }) : loops);
@@ -112,6 +122,7 @@ export function walk(doc, entities, out, { m = null, plot = false, frozen = null
       }
       case 'text':
         if (e.picName && findPicture(doc, e.s)) return;   // a picture's name stands in for it only until its file is loaded
+        if (e.pdfName && findPdf(doc, e.s.replace(/ \(\d+\)$/, ''))) return;   // …and an underlay's
         {
           const te = mm ? txEntity(e, mm) : e;
           if (e.bgm) {   // a background mask (0.5 WL.8): before the text; out.mask draws it over the linework under it
@@ -139,9 +150,12 @@ export function walk(doc, entities, out, { m = null, plot = false, frozen = null
       }
       case 'poly': {
         if (e.pic && out.picture) out.picture(pictureOut(e, mm, o));
+        if (e.pdf && out.pdf && !e.pdf.off) out.pdf(pdfOut(e, mm, o));
         const b = polyBands(e);
         if (!b) { strokeOf(e, prims(e, null), color, lw, mm, ctx, o); return; }
-        if (b.loops.length) out.fill(color, txLoops(b.loops, mm), true, o);
+        // 0.6.1 FIX-061-PLINE-VIEW: each band and corner its own ring, all turning the same way after the transform, filled
+        // so that overlaps add up (nz) — one even-odd fill of them all left holes at every corner and crossing
+        if (b.loops.length) { const nz = { ...(o || {}), nz: true }; for (const l of txLoops(b.loops, mm)) out.fill(color, [clockwise(l)], true, nz); }
         if (b.plain.length) strokeOf(e, b.plain, color, lw, mm, ctx, o);
         return;
       }
@@ -161,7 +175,7 @@ export function walk(doc, entities, out, { m = null, plot = false, frozen = null
   const plain = out;
   const fade = (o) => ({ ...(o || {}), alpha: (o?.alpha ?? 1) * REF_FADE });
   const faded = re ? { ...plain, stroke: (c, p, lw, o) => plain.stroke(c, p, lw, fade(o)), fill: (c, l, s, o) => plain.fill(c, l, s, o?.wipe ? o : fade(o)), text: (c, e, o) => plain.text(c, e, fade(o)),
-    ...(plain.infinite ? { infinite: (c, e, lw, o) => plain.infinite(c, e, lw, fade(o)) } : {}), ...(plain.picture ? { picture: (p) => plain.picture({ ...p, alpha: (p.alpha ?? 1) * REF_FADE }) } : {}) } : plain;
+    ...(plain.infinite ? { infinite: (c, e, lw, o) => plain.infinite(c, e, lw, fade(o)) } : {}), ...(plain.pdf ? { pdf: (p) => plain.pdf({ ...p, alpha: (p.alpha ?? 1) * REF_FADE }) } : {}), ...(plain.picture ? { picture: (p) => plain.picture({ ...p, alpha: (p.alpha ?? 1) * REF_FADE }) } : {}) } : plain;
   for (const e of entities) {
     if (re && re.map.get(e.id) === e) { if (e.id === re.ref) continue; out = re.ids.has(e.id) ? plain : faded; } else out = plain;
     if (e.type === 'viewport') {
@@ -187,6 +201,18 @@ export function maskLoop(e, scale = 1.5) {
   const c = Math.cos(e.rot || 0), s = Math.sin(e.rot || 0), P = (x, y) => [e.x + x * c - y * s, e.y + x * s + y * c];
   const pts = [P(x0 - m, b.y - m), P(x1 + m, b.y - m), P(x1 + m, b.y + b.h + m), P(x0 - m, b.y + b.h + m)];
   return [...pts.flat(), ...pts[0]];
+}
+
+/** An underlay's frame → what out.pdf gets: where the page's points land in the drawing, its clip and its settings. */
+function pdfOut(e, mm, o) {
+  const p = e.pdf, m = mm ? [...mm] : [1, 0, 0, 1, 0, 0];
+  const clip = [];
+  for (const q of e.pts) { const r = mm ? mApply(mm, q) : q; clip.push(r.x, r.y); }
+  return {
+    file: p.file, page: p.page, m, w: p.w, h: p.h, clip, clipped: !!p.clipped, mono: !!p.mono, contrast: Number.isFinite(p.contrast) ? p.contrast : 50,
+    layers: p.layers && typeof p.layers === 'object' ? p.layers : {},
+    alpha: (o?.alpha ?? 1) * (1 - (Number.isFinite(p.fade) ? Math.max(0, Math.min(80, p.fade)) / 100 : 0)),
+  };
 }
 
 /** A picture's frame → what out.picture gets: the picture's placement and its frame, through the transform. */
@@ -233,6 +259,7 @@ export function polyBands(e) {
   if (!g && !pts.some((p) => p.sw > 0 || p.ew > 0)) return null;
   const n = pts.length, segs = e.closed ? n : n - 1;
   const loops = [], plain = [];
+  const ends = [];   // per wide segment drawn: its index and both ends { x, y, tx, ty (travel direction), h (half width) }
   for (let i = 0; i < segs; i++) {
     const a = pts[i], q = pts[(i + 1) % n];
     const ws = Number.isFinite(a.sw) ? a.sw : g, we = Number.isFinite(a.ew) ? a.ew : g;
@@ -243,7 +270,9 @@ export function polyBands(e) {
     // points along the segment with their unit normals (left side)
     const along = [];
     if (p.k === 'L') {
-      const L = Math.hypot(p.x2 - p.x1, p.y2 - p.y1) || 1, nx = -(p.y2 - p.y1) / L, ny = (p.x2 - p.x1) / L;
+      const L = Math.hypot(p.x2 - p.x1, p.y2 - p.y1);
+      if (!(L > 1e-12)) continue;   // a repeated vertex: no band (and no corner) there
+      const nx = -(p.y2 - p.y1) / L, ny = (p.x2 - p.x1) / L;
       along.push([p.x1, p.y1, nx, ny, 0], [p.x2, p.y2, nx, ny, 1]);
     } else {
       // an A primitive runs counter-clockwise from a0 to a1; the polyline may run either way
@@ -265,6 +294,41 @@ export function polyBands(e) {
     const ring = [...left, ...right];
     ring.push(ring[0], ring[1]);
     loops.push(ring);
+    // the travel direction at each end is the left normal turned a quarter clockwise
+    const f = along[0], l = along[along.length - 1];
+    ends.push({ i, start: { x: f[0], y: f[1], tx: f[3], ty: -f[2], h: ws / 2 }, end: { x: l[0], y: l[1], tx: l[3], ty: -l[2], h: we / 2 } });
+  }
+  // 0.6.1 corners: where one wide segment meets the next, the gap on the outside is filled out to where the two outer edges
+  // meet (a mitre, as other programs draw wide polylines), or cut straight across when that is too far out (a sharp turn)
+  for (let k = 0; k < ends.length; k++) {
+    const A = ends[k], B = ends[k + 1] || (e.closed && ends.length > 1 ? ends[0] : null);
+    if (!B || B === A || !(A.end.h > 0) || !(B.start.h > 0)) continue;
+    const a = A.end, b = B.start;
+    // the next wide segment starts where this one ends (repeated vertices between them are skipped above)
+    if (Math.hypot(a.x - b.x, a.y - b.y) > 1e-9 * Math.max(1, Math.abs(a.x), Math.abs(a.y), a.h)) continue;
+    const cross = a.tx * b.ty - a.ty * b.tx, dot = a.tx * b.tx + a.ty * b.ty;
+    if (Math.abs(cross) < 1e-9 && dot > 0) continue;   // straight on
+    const side = cross > 0 ? -1 : 1;   // a left turn opens the gap on the right
+    const P1 = { x: a.x - side * a.ty * a.h, y: a.y + side * a.tx * a.h }, P2 = { x: b.x - side * b.ty * b.h, y: b.y + side * b.tx * b.h };
+    let X = null;
+    if (Math.abs(cross) > 1e-9) {   // P1 + s·ta = P2 + u·tb
+      const s = ((P2.x - P1.x) * b.ty - (P2.y - P1.y) * b.tx) / cross;
+      const c = { x: P1.x + s * a.tx, y: P1.y + s * a.ty };
+      if (s >= 0 && Math.hypot(c.x - a.x, c.y - a.y) <= 10 * Math.max(a.h, b.h)) X = c;
+    }
+    const wedge = X ? [a.x, a.y, P1.x, P1.y, X.x, X.y, P2.x, P2.y] : [a.x, a.y, P1.x, P1.y, P2.x, P2.y];
+    wedge.push(wedge[0], wedge[1]);
+    loops.push(wedge);
   }
   return { loops, plain };
+}
+
+/** A ring [x, y, …] turned clockwise (negative area), so rings filled together add up instead of cancelling. */
+export function clockwise(l) {
+  let a = 0;
+  for (let i = 0; i + 3 < l.length; i += 2) a += l[i] * l[i + 3] - l[i + 2] * l[i + 1];
+  if (a <= 0) return l;
+  const out = [];
+  for (let i = l.length - 2; i >= 0; i -= 2) out.push(l[i], l[i + 1]);
+  return out;
 }

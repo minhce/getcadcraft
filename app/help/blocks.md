@@ -93,6 +93,10 @@ Unnamed blocks (dimensions, tables) and references inside other blocks are not c
 
 A name can be up to 255 characters and can contain spaces, but it cannot start with an asterisk, and cannot contain `<` `>` `/` `\` `"` `:` `;` `?` `*` `|` `=` or a backtick. When you save DXF R12, names are written in capitals, other characters than letters, digits, `$`, `_` and `-` become `_`, and names are cut to 31 characters; the history says how many changed. Short names in capitals, digits and hyphens, like `DOOR-900`, survive unchanged. A saved DWG keeps names as you typed them, upper and lower case; only characters DWG does not allow change (a `|` becomes `$0$`, others become `_`).
 
+## Write a block or objects to a file of their own
+
+Type `W` ({{cmd:WBLOCK}}) and choose **Objects**, **Block** or **Entire drawing**. The result is a new DWG or DXF holding only the layers, styles and blocks it uses, with your base point as its origin. For objects you can keep them, turn them into a block, or delete them from this drawing.
+
 ## Common mistakes
 
 - **The block landed far from the crosshair.** The base point was not on the objects. Make the block again with the base point on a corner or a hinge.

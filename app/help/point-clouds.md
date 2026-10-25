@@ -33,3 +33,7 @@ The 3D tab shows the cloud too, its lowest point on the ground, with the same sl
 :::note
 The cloud is not part of the drawing: it is not saved in the DWG or DXF, undo does not change it, and it is not plotted. Attach it again when you open the drawing later. Files are read on this computer; nothing is uploaded. Very large scans are thinned evenly to 2 million points. E57 files open up to 6 million points and 512 MB for now: export larger scans as LAS or LAZ.
 :::
+
+## Several scans
+
+Scans taken from different positions can be registered into one frame, refined with ICP and exported as one LAS or E57: see [Register several scans into one](topic:register-scans).

@@ -189,6 +189,10 @@ See [Align objects](topic:modify-objects#align-objects).
 
 Aliases: `ALP`; or {{ui:Modify}} › {{ui:More}} › {{ui:Align and distribute}}. Opens the panel that runs ALIGNTO and DISTRIBUTE by clicks.
 
+### LASER
+
+Aliases: `LASERCUT`; or {{ui:View}} › {{ui:More}} › {{ui:Laser…}}. Opens the Laser panel over the drawing: what each layer does (cut, score, engrave, fill, picture), the preview, GRBL G-code to save, and framing and sending over Web Serial. See [Send a drawing to a laser](topic:laser-cutting).
+
 ### STRETCH
 
 Aliases: `S`; or {{ui:Stretch}}. `Select objects to stretch`: drag crossing windows (or type `C`) over the ends to move. `Specify base point [Displacement]`, `Specify second point`. Points inside the windows move: line ends, polyline vertices (arc segments keep their height), dimension points; circles, ellipses, text, points and blocks move whole when their center or insertion point is inside. A selection made before the command keeps the crossing windows (and lassos) that made it, so they stretch the same way. Without a window, the objects move whole.
@@ -390,6 +394,14 @@ No aliases. Each asks `Enter new value for … <current>` and sets that size for
 
 Dimension setting: the format of new dimensions only (1 scientific, 2 decimal, 3 engineering, 4 architectural, 5 fractional).
 
+### DIMSTYLE and -DIMSTYLE
+
+Aliases: `DST`, `DDIM`, `D`. The Dimension style manager: {{ui:Set current}}, {{ui:New…}}, {{ui:Modify…}}, {{ui:Rename…}}, {{ui:Delete}}, {{ui:Compare…}}, {{ui:Apply to selected}}. `-DIMSTYLE` on the command line: `Dimension style [Restore/Save/Delete/Apply/Compare/reName/List]`. See [Set dimension sizes](topic:dimension-settings#named-dimension-styles).
+
+### DIMEDIT and DIMTEDIT
+
+`DIMEDIT` (`DED`): `Dimension edit [Home/New/Rotate/Oblique] <Home>`, then the dimensions (or those already selected). New asks for the text (`<>` = the measurement); Rotate for an angle (0 puts the text back); Oblique for the extension lines' angle from the X axis (Enter = none; linear and aligned dimensions only). `DIMTEDIT` (`DIMTED`): `Dimension text [Left/Right/Center/Home/Angle] <Center>`. See [Set dimension sizes](topic:dimension-settings#change-dimension-text-and-extension-lines).
+
 ### DIMTEXTUNIT
 
 Aliases: `DTU`. `Units in the text of new dimensions [Drawing units/mm/cm/m/km]`, or with dimensions selected `Units in the text of the selected dimensions`. Writes the measured length in that unit with the unit after it (DIMLFAC and a DIMPOST suffix); `D` goes back to drawing units. See [Dimensions in mm, cm, m or km](topic:dimension-settings#dimensions-in-mm-cm-m-or-km).
@@ -442,6 +454,14 @@ Alias `SWMACRO`. Downloads a macro (.swb) that rebuilds the model as one constra
 
 ## Blocks
 
+### SCALELISTEDIT
+
+Aliases: `SCALELIST`. `Scale list [Add/Edit/Delete/List/Reset]` until {{key:Enter}}. Add: `Scale name`, `Paper units`, `Drawing units`. Edit and Delete ask for the scale's name. The drawing's own scales join the viewport and plot scale lists and are saved with the drawing. See [Units, papers and scales](topic:units-papers-scales#scales).
+
+### SPLINE, SPLINEDIT and PEDIT
+
+`SPLINE` (`SPL`): `First point of the spline [Method/Object] (Fit points)`. Fit: points the curve passes through; `Close`, `Undo`, then `Start tangent` and `End tangent` (a point, or {{key:Enter}}). Method › Control vertices asks a degree (1 to 5) and draws from a control polygon. Object turns polylines into splines through their vertices. `SPLINEDIT` (`SPE`): `[Fit data/Edit vertex/convert to Polyline/Open or Close/Reverse/Undo/eXit]`; Fit data `[Add/Delete/Move/Purge/Tangents/eXit]`; Edit vertex `[Add control point/Move/Weight/eXit]`. `PEDIT` (`PE`): `[Close/Open/Join/Width/Fit/Spline/Decurve/Ltype gen/Reverse/Undo/eXit]`, `M` for several objects; lines, arcs and splines are offered as polylines first. See [Splines and polylines](topic:splines).
+
 ### BLOCK
 
 Aliases: `B`, `BMAKE`.
@@ -449,6 +469,16 @@ Aliases: `B`, `BMAKE`.
 - `Enter block name`. If it exists: `Block "…" already exists. Redefine it? [Yes/No] <N>`.
 - `Specify insertion base point`
 - `Select objects`. They are replaced by one reference to the new block.
+
+### WBLOCK
+
+Aliases: `W`, `-WBLOCK`. Writes a block, some objects or the whole drawing as a new DWG or DXF file. `WBLOCK source [Block/Entire drawing/Objects] <Objects>`:
+
+- **Objects**: `Specify insertion base point` (it becomes the new drawing's origin), `Select objects`, then `File format [DWG/DXF/R12 DXF]` and `File name for the new drawing`, then `What to do with the objects [Retain/Convert to block/Delete]`. Convert replaces them with one reference to a block of the file's name; Delete removes them.
+- **Block**: `Block to write out`. The block's own objects, with its base point as the origin, nested blocks included.
+- **Entire drawing**: every object in model space. Sheets are not written; use {{cmd:SAVEAS}} for a copy that keeps them.
+
+The new file holds only the layers, linetypes, text and dimension styles and blocks that its objects use, and the drawing's units. The version of a DWG is the one {{cmd:SAVEAS}} last used. In the browser the file downloads; in Studio the save dialog opens.
 
 ### ATTDEF
 
@@ -627,6 +657,18 @@ Aliases: `Z`.
 - A number such as `2`, `2x` or `0.5x` (or `S` and then the number) zooms in or out by that factor round the middle of the screen.
 - `C` asks `Specify center point` and `Enter height or magnification (nX)`.
 
+### PDFATTACH, PDFIMPORT and the PDF commands
+
+Aliases: `PDFATT` for {{cmd:PDFATTACH}}, `PDFIM` for {{cmd:PDFIMPORT}}. {{cmd:PDFATTACH}} puts a PDF page under the drawing (file, page, insertion point, scale, rotation); {{cmd:PDFIMPORT}} turns a page's lines, curves, fills and text into drawing objects on layers named after the PDF, at true size, a typed scale, or scaled from two points and a real distance. {{cmd:PDFCLIP}} clips an underlay, {{cmd:PDFADJUST}} sets fade, contrast, monochrome or switches it off, {{cmd:PDFLAYERS}} switches the PDF's own layers, and {{cmd:PDF}} gives CadCraft the files a drawing's underlays use again. See [PDF underlays](topic:pdf-underlay).
+
+### SCANATTACH and the scanned-drawing commands
+
+Aliases: `SCA` {{cmd:SCANATTACH}}, `SCS` {{cmd:SCANSCALE}}, `SCL` {{cmd:SCANALIGN}}, `SCD` {{cmd:SCANDESKEW}}, `SCC` {{cmd:SCANCLEAN}}, `SCR` {{cmd:SCANCROP}}, `SCE` {{cmd:SCANERASE}}, `SCT` {{cmd:SCANTRACE}}, `SCI` {{cmd:SCANINFO}}; {{cmd:RASTERSNAP}} has none. They work on a picture, one undo step each. {{cmd:SCANATTACH}} inserts a PNG, JPEG, TIFF (one page or all) or a PDF page that is a picture. {{cmd:SCANSCALE}} scales the sheet from two picked points and the true distance. {{cmd:SCANALIGN}} moves and turns it onto two points (`Scale the sheet to fit` Yes/No). {{cmd:SCANDESKEW}} shows the angle of the sheet's long lines and turns the sheet once you `Accept` or give a `Value`. {{cmd:SCANCLEAN}} makes it black and white (`Threshold` Auto/Adaptive/Level, `Specks`) and `Run`. {{cmd:SCANCROP}} keeps a window. {{cmd:SCANERASE}} erases a `Rectangle`, `Polygon` or `Lasso`. {{cmd:SCANTRACE}} traces lines and arcs onto a new layer (`Tolerance`, `Window`, `Arcs`, `Leftovers`, `Run`) and reports what it found and what it left as raster. {{cmd:SCANINFO}} lists the original file and the steps. {{cmd:RASTERSNAP}} turns snapping to the lines of scanned sheets On or Off. See the topic Scanned drawings and the trace.
+
+### REGEN and REGENALL
+
+Aliases: `RE` for {{cmd:REGEN}}, `REA` for {{cmd:REGENALL}}. Rebuild what is drawn on screen from the drawing: {{cmd:REGEN}} the tab you are looking at (on a sheet, the model its viewports show too), {{cmd:REGENALL}} every tab, every split-screen pane and every open drawing. Use them when the picture looks stale after a scripted or very large change, or an assistant edited the drawing; the drawing itself is not touched, so there is nothing to undo.
+
 ### NAMEDVIEW
 
 Aliases: `NV`, `VIEWS`. `Enter an option [?/Restore/Save/Window/Delete] <Restore>`, then the view's name. `S` saves the view on screen, `W` a window you pick, `R` shows a saved view, `D` deletes one, `?` lists the views of this tab. Saving under an existing name replaces it; each change is one undo step. Views belong to the tab they were saved on. DWG and DXF files keep them (the VIEW table); a sheet's views come back on the first sheet, since the file does not say which.
@@ -662,6 +704,14 @@ Layers by picking objects; also in the {{ui:Layers}} panel's {{ui:Tools}} menu. 
 {{cmd:DXFOUT}} always downloads a DXF R12 copy, without changing the format {{cmd:SAVE}} uses.
 
 See [Files: what opens, what saves](topic:files#saving).
+
+### TOUR
+
+Aliases: `TUTORIAL`. Starts the six-step first-drawing tour again. See [Getting started](topic:getting-started#prefer-to-be-guided).
+
+### TOOLBARDOCK
+
+Aliases: `TBDOCK`. `Toolbar position [Top/Bottom/Left/Right]`. See [Settings](topic:settings#toolbar-position).
 
 ### POLARANG
 

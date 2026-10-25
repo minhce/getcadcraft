@@ -133,6 +133,7 @@ $__more = [
         ['TURNRIGHT', Lang::t('toolbar.turn.right'), 'TURNRIGHT'],
         ['TURNWORLD', Lang::t('toolbar.turn.world'), 'TURNWORLD'],
         ['COMPARESETTINGS', Lang::t('toolbar.compare'), 'CMPSET'],   // 0.5 WL.12
+        ['HISTORY', Lang::t('toolbar.history'), 'HIST'],   // 0.7 D7.31
         ['MAPLAYERS', Lang::t('toolbar.maplayers'), 'ML'],   // 0.5 SG.3
         ['POINTCLOUDATTACH', Lang::t('toolbar.pcattach'), 'PCATTACH'],   // 0.5 SG.1
         ['POINTCLOUD', Lang::t('toolbar.pointcloud'), 'PC'],
@@ -142,6 +143,7 @@ $__more = [
         ['APPLOAD', Lang::t('toolbar.appload'), 'AP'],
         ['ALIASEDIT', Lang::t('toolbar.aliasedit'), 'ALIASEDIT'],
         ['SHORTCUTS', Lang::t('toolbar.shortcuts'), 'KEYS'],   // 0.5 WL.18
+        ['LASER', Lang::t('toolbar.laser'), 'LASER'],   // 0.7 SU.772: the Laser panel (laser-cad.js)
     ],
     'Modify' => [   // i18n-ignore (the group's key in $__tools, not shown)
         ['ARRAY', Lang::t('toolbar.array'), 'AR'],
@@ -154,7 +156,12 @@ $__more = [
     ],
 ];
 ?>
-<main id="main" class="cc" data-cadcraft<?php if ($__3dUrl): ?> data-open3d-url="<?= e($__3dUrl) ?>" data-open3d-app="<?= e($__3dApp['name']) ?>"<?php endif; ?><?php if ($__bimUrl): ?> data-bim-url="<?= e($__bimUrl) ?>"<?php endif; ?>>
+<main id="main" class="cc" data-cadcraft
+      data-pdf-worker="<?= e($__manifest['pdfWorker'] ?? '') ?>"
+      data-pdf-cmaps="<?= e($__manifest['pdfCmaps'] ?? '') ?>"
+      data-pdf-fonts="<?= e($__manifest['pdfFonts'] ?? '') ?>"
+      data-pdf-wasm="<?= e($__manifest['pdfWasm'] ?? '') ?>"
+      data-pdf-icc="<?= e($__manifest['pdfIcc'] ?? '') ?>"<?php if ($__3dUrl): ?> data-open3d-url="<?= e($__3dUrl) ?>" data-open3d-app="<?= e($__3dApp['name']) ?>"<?php endif; ?><?php if ($__bimUrl): ?> data-bim-url="<?= e($__bimUrl) ?>"<?php endif; ?>>
   <h1 class="visually-hidden"><?= Lang::e('ui.h1', ['app' => $app['name']]) ?></h1>
 
   <div class="cc-tools" role="toolbar" aria-label="<?= Lang::e('ui.tools') ?>">
@@ -380,7 +387,10 @@ $__more = [
       <canvas class="cc-canvas cc-over" data-over aria-label="<?= Lang::e('ui.canvas.aria') ?>"></canvas>
     </div>
     <div class="cc-hint" data-hint>
-      <p class="cc-hint-h"><?= Lang::e('ui.start_drawing') ?></p>
+      <div class="cc-hint-head">
+        <p class="cc-hint-h"><?= Lang::e('ui.start_drawing') ?></p>
+        <button type="button" class="cc-x cc-hint-close" data-hint-close aria-label="<?= Lang::e('ui.hint.close') ?>" title="<?= Lang::e('ui.hint.close') ?>"><i class="bi bi-x-lg" aria-hidden="true"></i></button>
+      </div>
       <ul>
         <li><?= Lang::e('ui.type') ?> <kbd>L</kbd> <?= Lang::e('ui.and_press') ?> <kbd>Enter</kbd> <?= Lang::e('ui.line_click_points_type') ?> <kbd>@100,0</kbd><?= Lang::e('ui.press') ?> <kbd>Enter</kbd> <?= Lang::e('ui.to_finish') ?></li>
         <li><kbd>C</kbd> <?= Lang::e('ui.circle_2') ?> <kbd>REC</kbd> <?= Lang::e('ui.rectangle_2') ?> <kbd>TR</kbd> <?= Lang::e('ui.trim_2') ?> <kbd>O</kbd> <?= Lang::e('ui.offset_type') ?> <kbd>HELP</kbd> <?= Lang::e('ui.every_command') ?></li>
@@ -388,6 +398,7 @@ $__more = [
         <li><kbd>DLI</kbd> <?= Lang::e('ui.dimensions') ?> <kbd>B</kbd> <?= Lang::e('ui.makes_block') ?> <strong>+</strong> <?= Lang::e('ui.under_drawing_makes_sheet') ?> <kbd>Ctrl</kbd>+<kbd>P</kbd> <?= Lang::e('ui.plots_pdf') ?></li>
         <li><?= Lang::e('ui.drop_dwg_dxf_here') ?></li>
       </ul>
+      <p class="cc-hint-tour"><button type="button" class="btn-line btn-sm-cc" data-hint-tour><?= Lang::e('ui.hint.tour') ?></button></p>
     </div>
     <div class="cc-drop" data-drop hidden><span><i class="bi bi-box-arrow-in-down-right" aria-hidden="true"></i> <?= Lang::e('ui.drop_dwg_dxf_open') ?></span></div>
     <div class="cc-busy" data-busy hidden><span data-busy-text><?= Lang::e('ui.working') ?></span></div>
@@ -420,7 +431,7 @@ $__more = [
     </form>
   </div>
 
-  <dialog class="cc-dialog" data-plot aria-labelledby="cc-plot-h">
+  <dialog class="cc-dialog" data-plot data-popout aria-labelledby="cc-plot-h">
     <form method="dialog" class="cc-plot" data-plot-form>
       <div class="cc-plot-head">
         <h2 class="cc-h" id="cc-plot-h"><?= Lang::e('ui.plot_pdf') ?></h2>
@@ -465,6 +476,14 @@ $__more = [
               <option value="150"><?= Lang::e('ui.plot.dpi', ['n' => 150]) ?></option>
             </select>
           </div>
+          <div class="cc-props" data-plot-printbox hidden>
+            <label for="cc-plot-printer"><?= Lang::e('plot.printer') ?></label>
+            <select id="cc-plot-printer" class="cc-select" data-plot-printer></select>
+            <label for="cc-plot-printpaper"><?= Lang::e('plot.print.paper') ?></label>
+            <select id="cc-plot-printpaper" class="cc-select" data-plot-printpaper></select>
+            <label for="cc-plot-copies"><?= Lang::e('plot.copies') ?></label>
+            <input id="cc-plot-copies" class="cc-input" type="number" min="1" max="99" step="1" value="1" inputmode="numeric" data-plot-copies>
+          </div>
           <p class="cc-note" data-plot-info></p>
         </div>
         <div class="cc-plot-preview"><canvas data-plot-canvas aria-label="<?= Lang::e('ui.preview_plotted_sheet') ?>"></canvas></div>
@@ -472,7 +491,10 @@ $__more = [
       <div class="cc-plot-foot">
         <span class="cc-note" data-plot-status></span>
         <button type="button" class="btn-line btn-sm-cc" data-plot-publish hidden title="<?= Lang::e('plot.publish.title') ?>"><?= Lang::e('plot.publish') ?></button>
+        <button type="button" class="btn-line btn-sm-cc" data-plot-png title="<?= Lang::e('plot.png.title') ?>"><?= Lang::e('plot.png') ?></button>
+        <button type="button" class="btn-line btn-sm-cc" data-plot-svg title="<?= Lang::e('plot.svg.title') ?>"><?= Lang::e('plot.svg') ?></button>
         <button type="button" class="btn-line btn-sm-cc" data-plot-open><?= Lang::e('ui.open_print') ?></button>
+        <button type="button" class="btn-line btn-sm-cc" data-plot-print><?= Lang::e('plot.print') ?></button>
         <button type="button" class="btn-plot btn-sm-cc" data-plot-save><?= Lang::e('ui.download_pdf') ?></button>
       </div>
     </form>

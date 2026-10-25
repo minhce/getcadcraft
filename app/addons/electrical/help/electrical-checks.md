@@ -21,5 +21,6 @@ Type {{cmd:ELCHECK}} (`ELC`). The history lists every finding, errors first, eac
 | draws … on a … breaker | a circuit's current is over its breaker rating (over 80 % is a warning) |
 | on no circuit | an installation device without a circuit |
 | no breaker rating | a circuit with loads and no defined breaker |
+| names no residual-current device | a circuit that feeds socket outlets and has no RCD of 30 mA or less in its RCD text (a warning; a planning reminder, not a code check) |
 | more wires than cores | a cable mark crosses more wires than its cores |
 | on no wire | a wire number left where no wire is |

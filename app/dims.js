@@ -106,9 +106,7 @@ function build(e) {
   switch (e.kind) {
     case 'linear': case 'aligned': {
       const r = e.kind === 'aligned' ? angleOf(e.p1, e.p2) : (e.rot || 0);
-      const u = { x: Math.cos(r), y: Math.sin(r) };
-      const d1 = (e.p1.x - e.loc.x) * u.x + (e.p1.y - e.loc.y) * u.y, d2 = (e.p2.x - e.loc.x) * u.x + (e.p2.y - e.loc.y) * u.y;
-      const q1 = { x: e.loc.x + u.x * d1, y: e.loc.y + u.y * d1 }, q2 = { x: e.loc.x + u.x * d2, y: e.loc.y + u.y * d2 };
+      const { q1, q2 } = dimLinePoints(e);
       for (const [p, q, role] of [[e.p1, q1, 'ext1'], [e.p2, q2, 'ext2']]) {
         const L = dist(p, q);
         if (L < 1e-12) continue;
@@ -188,6 +186,23 @@ function build(e) {
     default: break;
   }
   return styleDimParts(e, out);
+}
+
+/**
+ * Where a linear or aligned dimension's extension lines meet its dimension line: q1 on the first, q2 on the second. Square to
+ * the dimension line, or slanted when the dimension has an obliquing angle `obl` (DIMEDIT Oblique: the angle of the extension
+ * lines from the X axis, radians).
+ */
+export function dimLinePoints(e) {
+  const r = e.kind === 'aligned' ? angleOf(e.p1, e.p2) : (e.rot || 0);
+  const u = { x: Math.cos(r), y: Math.sin(r) };
+  if (Number.isFinite(e.obl) && Math.abs(Math.sin(e.obl - r)) > 1e-6) {
+    const dv = { x: Math.cos(e.obl), y: Math.sin(e.obl) }, n = { x: -u.y, y: u.x }, den = dv.x * n.x + dv.y * n.y;
+    const hit = (p) => { const k = ((e.loc.x - p.x) * n.x + (e.loc.y - p.y) * n.y) / den; return { x: p.x + dv.x * k, y: p.y + dv.y * k }; };
+    return { q1: hit(e.p1), q2: hit(e.p2), u, r };
+  }
+  const d1 = (e.p1.x - e.loc.x) * u.x + (e.p1.y - e.loc.y) * u.y, d2 = (e.p2.x - e.loc.x) * u.x + (e.p2.y - e.loc.y) * u.y;
+  return { q1: { x: e.loc.x + u.x * d1, y: e.loc.y + u.y * d1 }, q2: { x: e.loc.x + u.x * d2, y: e.loc.y + u.y * d2 }, u, r };
 }
 
 /** The defining point that lies on the ray from the vertex at angle a (p1 or p2). */

@@ -20,6 +20,8 @@
  *   closeVis(doc, be, entities) → { block (with dyn), renamed Map, deleted Set, current } | { plain: reason }
  */
 const clone = (e) => { const c = { ...e }; delete c.id; return c; };
+/** File objects no state shows or hides (dyn-blocks.js freeObjects: the parameter's own list, else attribute definitions no state lists). */
+const freeOf = (d) => (Array.isArray(d.vis.free) ? new Set(d.vis.free) : new Set((d.ad || []).filter((i) => !d.vis.states.some((s) => s.show.includes(i)))));
 
 export function openVis(doc, blk) {
   const d = blk && blk.dyn, vis = d && d.vis;
@@ -29,7 +31,8 @@ export function openVis(doc, blk) {
   const ad = new Set(d.ad || []);
   // `src` = the state's name in the file (renamed or new states; dyn-blocks.js writes the parameter with it, DB.9)
   const states = vis.states.map((s) => ({ name: s.name, show: [...s.show], ...(s.src !== undefined && s.src !== s.name ? { src: s.src } : {}) }));
-  const same = (s) => d.all.every((_, i) => ad.has(i) || s.show.includes(i) === !!d.shown[i]);
+  const free = freeOf(d);
+  const same = (s) => d.all.every((_, i) => free.has(i) || s.show.includes(i) === !!d.shown[i]);
   const cur = (states.find(same) || states[0]).name;
   const ghost = new Set(d.all.map((p, i) => (!ad.has(i) && !p.length ? i : -1)).filter((i) => i >= 0));   // objects CadCraft can't show
   const v = { def: blk.name, states, cur, fiOf: new Map(), store: new Map(), ad, ghost, n: d.all.length, entities: [] };
@@ -160,8 +163,9 @@ export function deleteState(be, name) {
 
 /**
  * Rebuild the definition from the editor. Plain block (dyn dropped) when objects were added, erased or exploded: then the
- * file objects no longer line up with the states. Attribute definitions (`entities` already split off by the caller) stay
- * in every state, as before.
+ * file objects no longer line up with the states. Attribute definitions (`entities` already split off by the caller) keep
+ * the states they were in (the editor does not move them between states); the definition shows those of its current state
+ * (0.6.1 FIX-061-DYN-ATTRS).
  */
 export function closeVis(doc, be, entities) {
   const v = be.vis, blk = doc.blocks.get(v.def);
@@ -181,7 +185,8 @@ export function closeVis(doc, be, entities) {
   }
   const cur = v.states.find((s) => s.name === v.cur);
   const showSet = new Set(cur.show);
-  const shown = all.map((_, fi) => (v.ad.has(fi) ? !!d.shown[fi] : showSet.has(fi)));
+  const free = freeOf(d);
+  const shown = all.map((_, fi) => (free.has(fi) ? !!d.shown[fi] : showSet.has(fi)));
   const vis = { ...d.vis, states: v.states.map((s) => ({ name: s.name, show: [...s.show].sort((a, b) => a - b), ...(s.src !== undefined && s.src !== s.name ? { src: s.src } : {}) })) };
   const key = (states) => JSON.stringify(states.map((s) => [s.name, s.show]));
   const changedVis = key(vis.states) !== key(d.vis.states);

@@ -130,8 +130,8 @@ section('The add-on in CadCraft: loader, commands, live updates, Properties (W2.
   await type('ELINSTALL', 'luminaire', 'C2', '2000,2100', '');
   await type('ELROUTE', '0,0', '0,1000', '4000,1000', '');
   await type('ELROUTE', '2000,1000', '2000,2000', '');
-  await type('ELCIRCUIT', 'D', 'C1', 'Sockets', '16', 'L1', 'DB1', '-1000,0');
-  await type('ELCIRCUIT', 'D', 'C2', 'Lights', '10', 'L1', '', '-1000,-500');
+  await type('ELCIRCUIT', 'D', 'C1', 'Sockets', '16', 'RCD1 30 mA A', 'L1', 'DB1', '-1000,0');
+  await type('ELCIRCUIT', 'D', 'C2', 'Lights', '10', '', 'L1', '', '-1000,-500');
   const IN = await import(pathToFileURL(path.join(APP, 'addons/electrical/lib/install.js')).href);
   let inst = IN.installation(doc, M.scan(doc));
   ok(inst.boards.length === 1 && inst.boards[0].tag === 'DB1' && inst.circuits.get('C1')?.watts === 400 && inst.circuits.get('C2')?.watts === 60 && inst.circuits.get('C1').breaker === 16, 'ELINSTALL and ELCIRCUIT: a board, two circuits with their loads', JSON.stringify([...inst.circuits.values()].map((c) => [c.name, c.watts, c.breaker, c.phase])));

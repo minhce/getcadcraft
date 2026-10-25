@@ -266,7 +266,7 @@ export function addImported(doc, got, label = 'IMPORT') {
 }
 
 /** IMPORT and EXPORT: the file types add-ons bring (api.files.importer / exporter). Registered once, as CadCraft's own. */
-function installFileCommands(ctx) {
+export function installFileCommands(ctx) {   // exported for tools/cadcraft-test/make-command-map.mjs
   if (commandRegistry.has('IMPORT')) return;
   const opt = commandRegistry.option;
   const choose = async (c, list, prompt) => {

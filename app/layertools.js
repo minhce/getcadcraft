@@ -382,12 +382,13 @@ export function installLayerTools(def, opt) {
     const Pl = await import('./plot.js');
     // each sheet with its own plot style table (0.6 DC.14), else the one last chosen in the Plot dialog
     const styleOf = (L) => findTable(c.doc, styleNameFor(c.doc, L)) || findTable(c.doc, prefs.style) || builtinTable(prefs.ink === 'color' ? 'colour' : 'monochrome');
+    await Pl.readPdfUnderlays(c.doc);   // PDF underlays print as their lines and text (0.7 D7.24)
     const lists = pick.map((L) => Pl.displayList(c.doc, Pl.layoutSheet(c.doc, L), { style: styleOf(L) }));
     const name = c.doc.meta.name || 'Drawing1';
     const { bytes, report } = await Pl.toPdfPages(lists, { pen: prefs.pen, title: name, names: pick.map((l) => l.name) });
     c.host.saveBlob(name + '.pdf', bytes, 'application/pdf');
     c.print(t('publish.done', { n: report.pages, file: name + '.pdf', list: listOf(pick.map((l) => l.name)) }));
-    if (report.missing) c.print(t('publish.missing', { n: report.missing }));
+    if (report.missing) c.print(t(report.font === 'Helvetica' ? 'publish.missing' : 'publish.missing_glyphs', { n: report.missing }));
   }, { help: () => t('publish.help') });
 
   // ---- COUNT (0.4 C34; count.js): block references counted, highlighted, exported ----

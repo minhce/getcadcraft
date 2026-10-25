@@ -34,6 +34,9 @@ const T = (x, y, s, h = 1.8) => ({ type: 'text', layer: '0', color: null, x, y, 
 const HALF = (x0, y0, x1, y1) => ({ type: 'hatch', layer: '0', color: null, solid: true, loops: [[x0, y0, x1, y0, x0, y1]] });
 const R = (x0, y0, x1, y1) => ({ type: 'poly', layer: '0', color: null, closed: true, pts: [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(([x, y]) => ({ x, y, b: 0 })) });
 
+/** A socket outlet base with a letter or two in it (data, telephone, television). */
+const sockLabel = (s) => [A(0, 0, 3, 0, 180), L(-3, 0, 3, 0), T(0, 1.4, s, s.length > 1 ? 1.3 : 1.7)];
+
 /** Installation symbols: key, group, load (W, a planning default), draw → entities (base point on the wall / centre). */
 export const INSTALL = [
   { key: 'socket', group: 'outlets', load: 200, draw: () => [A(0, 0, 3, 0, 180), L(-3, 0, 3, 0), L(0, 3, 0, 4.5)] },
@@ -42,20 +45,37 @@ export const INSTALL = [
   { key: 'socket.3ph', group: 'outlets', load: 3000, draw: () => [A(0, 0, 3, 0, 180), L(-3, 0, 3, 0), L(-1.2, 2.7, -1.6, 4.4), L(0, 3, 0, 4.5), L(1.2, 2.7, 1.6, 4.4)] },
   { key: 'switch', group: 'switches', load: 0, draw: () => [C(0, 0, 1.2), L(0.85, 0.85, 3.4, 3.4), L(3.4, 3.4, 4.3, 2.5)] },
   { key: 'switch.2way', group: 'switches', load: 0, draw: () => [C(0, 0, 1.2), L(0.85, 0.85, 3.4, 3.4), L(3.4, 3.4, 4.3, 2.5), L(-0.85, -0.85, -3.4, -3.4), L(-3.4, -3.4, -4.3, -2.5)] },
+  { key: 'socket.data', group: 'outlets', load: 5, draw: () => sockLabel('D') },
+  { key: 'socket.tel', group: 'outlets', load: 2, draw: () => sockLabel('T') },
+  { key: 'socket.tv', group: 'outlets', load: 5, draw: () => sockLabel('TV') },
   { key: 'switch.dimmer', group: 'switches', load: 0, draw: () => [C(0, 0, 1.2), L(0.85, 0.85, 3.4, 3.4), L(3.4, 3.4, 4.3, 2.5), L(-0.6, -2.2, 0.6, -2.2), L(0.6, -2.2, 0.6, -1.6)] },
+  { key: 'switch.key', group: 'switches', load: 0, draw: () => [C(0, 0, 1.2), L(0.85, 0.85, 3.4, 3.4), L(3.4, 3.4, 4.3, 2.5), T(-3.2, -2.4, 'K', 1.6)] },
+  { key: 'switch.timer', group: 'switches', load: 3, draw: () => [C(0, 0, 1.2), L(0.85, 0.85, 3.4, 3.4), L(3.4, 3.4, 4.3, 2.5), T(-3.2, -2.4, 't', 1.6)] },
+  { key: 'thermostat', group: 'switches', load: 3, draw: () => [R(-2.5, -2.5, 2.5, 2.5), T(0, 0, 't\u00b0', 1.9)] },
   { key: 'pushbutton', group: 'switches', load: 0, draw: () => [C(0, 0, 1.6), C(0, 0, 0.6)] },
   { key: 'sensor', group: 'switches', load: 2, draw: () => [C(0, 0, 2), A(0, 0, 3, 30, 150), A(0, 0, 3.8, 45, 135)] },
   { key: 'luminaire', group: 'lights', load: 60, draw: () => [C(0, 0, 3), L(-2.12, -2.12, 2.12, 2.12), L(-2.12, 2.12, 2.12, -2.12)] },
   { key: 'downlight', group: 'lights', load: 10, draw: () => [C(0, 0, 2), C(0, 0, 0.8)] },
   { key: 'luminaire.linear', group: 'lights', load: 36, draw: () => [L(-5, 0, 5, 0), L(-5, -1.2, -5, 1.2), L(5, -1.2, 5, 1.2)] },
   { key: 'luminaire.emergency', group: 'lights', load: 5, draw: () => [C(0, 0, 3), L(-2.12, -2.12, 2.12, 2.12), L(-2.12, 2.12, 2.12, -2.12), HALF(-3, -0.5, 3, 0.5)] },
+  { key: 'luminaire.exit', group: 'lights', load: 8, draw: () => [R(-5, -2.5, 5, 2.5), L(-3, 0, 3, 0), L(3, 0, 1.6, 1.4), L(3, 0, 1.6, -1.4)] },
+  { key: 'detector.smoke', group: 'detectors', load: 1, draw: () => [C(0, 0, 3), T(0, 0, 'S', 2.4)] },
+  { key: 'detector.heat', group: 'detectors', load: 1, draw: () => [C(0, 0, 3), T(0, 0, 'H', 2.4)] },
+  { key: 'callpoint', group: 'detectors', load: 1, draw: () => [R(-3, -3, 3, 3), T(0, 0, 'M', 2.4)] },
+  { key: 'sounder', group: 'detectors', load: 10, draw: () => [A(0, 0, 3, 0, 180), L(-3, 0, 3, 0), C(0, -1.4, 0.7)] },
+  { key: 'fan', group: 'other', load: 40, draw: () => [C(0, 0, 3), T(0, 0, 'F', 2.4)] },
+  { key: 'heater', group: 'other', load: 2000, draw: () => [R(-3.5, -3, 3.5, 3), T(0, 0, 'WH', 1.8)] },
+  { key: 'cooker', group: 'other', load: 7000, draw: () => [R(-3.5, -3.5, 3.5, 3.5), C(-1.6, 1.6, 1), C(1.6, 1.6, 1), C(-1.6, -1.6, 1), C(1.6, -1.6, 1)] },
+  { key: 'evcharger', group: 'other', load: 7400, draw: () => [R(-3.5, -3, 3.5, 3), T(0, 0, 'EV', 1.8)] },
+  { key: 'meter', group: 'other', load: 2, draw: () => [C(0, 0, 3), T(0, 0, 'kWh', 1.4)] },
   { key: 'junction', group: 'other', load: 0, draw: () => [C(0, 0, 1.5), { type: 'hatch', layer: '0', color: null, solid: true, loops: [ring(0, 0, 0.7)] }] },
   { key: 'appliance', group: 'other', load: 2000, draw: () => [R(-3, -3, 3, 3), T(0, 0, 'A', 2.5)] },
   { key: 'board', group: 'boards', load: 0, role: 'board', draw: () => [R(-5, -2, 5, 2), HALF(-5, -2, 5, 2)] },
+  { key: 'board.sub', group: 'boards', load: 0, role: 'board', draw: () => [R(-5, -2, 5, 2), L(-5, -2, 5, 2)] },
 ];
 function ring(cx, cy, r, n = 12) { const o = []; for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; o.push(cx + r * Math.cos(a), cy + r * Math.sin(a)); } return o; }
 
-export const INSTALL_GROUPS = ['outlets', 'switches', 'lights', 'other', 'boards'];
+export const INSTALL_GROUPS = ['outlets', 'switches', 'lights', 'detectors', 'other', 'boards'];
 const BY_KEY = new Map(INSTALL.map((s) => [s.key, s]));
 export const installSymbol = (key) => BY_KEY.get(key) || null;
 export const installBlockName = (key) => ('EL_INST_' + key).toUpperCase().replace(/[^A-Z0-9_]/g, '_').slice(0, 31);
@@ -84,6 +104,7 @@ export function circuitBlock() {
       ad('CURVE', 0, 0, 1.8, { invisible: true, def: 'B', prompt: t('prompt.breaker-curve') }), ad('PHASE', 0, 0, 1.8, { invisible: true, def: 'L1', prompt: t('prompt.phase') }),
       ad('VOLTAGE', 0, 0, 1.8, { invisible: true, def: '230', prompt: t('prompt.voltage-v') }), ad('PF', 0, 0, 1.8, { invisible: true, def: '1', prompt: t('prompt.power-factor') }),
       ad('CABLE', 0, 0, 1.8, { invisible: true, prompt: t('prompt.cable-type') }),
+      ad('RCD', 0, 0, 1.8, { invisible: true, prompt: t('prompt.rcd') }),
       ad(META_TAG, 0, 0, 1, { invisible: true, constant: true, def: writeMeta({ sym: 'circuit', role: 'circuit' }) })] };
 }
 
@@ -129,7 +150,7 @@ export function installation(doc, model) {
   const circuits = new Map();
   const get = (name) => {
     let c = circuits.get(name);
-    if (!c) circuits.set(name, (c = { name, board: null, boardTag: '', def: null, loads: [], watts: 0, phase: 'L1', voltage: 230, breaker: 0, curve: 'B', pf: 1, desc: '', cable: '' }));
+    if (!c) circuits.set(name, (c = { name, board: null, boardTag: '', def: null, loads: [], watts: 0, phase: 'L1', voltage: 230, breaker: 0, curve: 'B', pf: 1, desc: '', cable: '', rcd: '' }));
     return c;
   };
   for (const d of model.circuits) {
@@ -146,6 +167,7 @@ export function installation(doc, model) {
     c.pf = Math.min(1, Math.max(0.1, num(d.attrs.PF) || 1));
     c.desc = String(d.attrs.DESC || '');
     c.cable = String(d.attrs.CABLE || '');
+    c.rcd = String(d.attrs.RCD || '').trim();   // the residual-current device in front of it: "RCD1 30 mA A" (0.7 ELEC-BUILDING)
   }
   for (const l of loads) if (l.circuit) { const c = get(l.circuit); c.loads.push(l); c.watts += l.watts; }
   for (const c of circuits.values()) {
@@ -155,6 +177,14 @@ export function installation(doc, model) {
   }
   return { boards, loads, circuits };
 }
+
+/** The trip current (mA) a circuit's RCD text names ("30 mA", "RCD1 0.03 A" is not read: write mA), or null. */
+export function rcdMilliamps(text) {
+  const m = /(\d+(?:[.,]\d+)?)\s*mA\b/i.exec(String(text || ''));
+  return m ? parseFloat(m[1].replace(',', '.')) : null;
+}
+/** Does a circuit feed a socket outlet (a general-purpose one: not data, telephone or television)? */
+export const hasSocket = (c) => c.loads.some((l) => /^socket(\.double|\.earth|\.3ph)?$/.test(l.sym));
 
 /** Current drawn by a circuit (A): single phase W / (V·pf); three phase ("3P", "L1L2L3") W / (√3·V·pf). */
 export function currentOf(c) {
@@ -183,7 +213,7 @@ export function assignCircuit(doc, loads, circuit) {
 /** Define (or redefine) a circuit: an EL_CIRCUIT label at `at` (inside a change). */
 export function defineCircuit(doc, map, at, values, scale = 1, existing = null) {
   ensureBlock(doc, circuitBlock());
-  const attrs = { CIRCUIT: '', DESC: '', BOARD: '', BREAKER: '16', CURVE: 'B', PHASE: 'L1', VOLTAGE: '230', PF: '1', CABLE: '', ...(existing?.e.attrs || {}), ...values };
+  const attrs = { CIRCUIT: '', DESC: '', BOARD: '', BREAKER: '16', CURVE: 'B', PHASE: 'L1', VOLTAGE: '230', PF: '1', CABLE: '', RCD: '', ...(existing?.e.attrs || {}), ...values };
   if (existing) return doc.update(existing.id, { ...existing.e, attrs }, existing.space.map);
   return doc.add({ type: 'insert', block: 'EL_CIRCUIT', x: at.x, y: at.y, sx: scale, sy: scale, rot: 0, layer: 'EL-CIRCUIT', attrs }, map);
 }

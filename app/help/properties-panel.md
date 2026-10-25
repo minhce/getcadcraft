@@ -67,8 +67,7 @@ All four dimensions change, in one undo step. A field that reads **Varies** mean
 With several objects selected, the {{ui:Totals}} section at the top says:
 
 - **Objects**: how many of each kind, for example "8 lines, 2 polylines, 1 circle".
-- **Total length**: the lines, arcs and polylines added up (splines from other programs count: they come in as
-  polylines), and how many objects that is.
+- **Total length**: the lines, arcs and polylines added up (splines count too), and how many objects that is.
 - **Total area**: the closed ones added up: circles, whole ellipses, closed polylines and hatches (a hatch's holes are
   taken off).
 

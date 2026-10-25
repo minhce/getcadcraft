@@ -19,6 +19,7 @@
  */
 
 import { Doc } from './doc.js';
+import { newDrawingUnits } from './units.js';   // 0.7 UNITS: a new drawing's $INSUNITS from the starred length unit
 
 export function createDocTabs({ doc, view, engine, host, strip, el, t, ask, saveCopy, refresh }) {
   let nextId = 2;
@@ -64,11 +65,12 @@ export function createDocTabs({ doc, view, engine, host, strip, el, t, ask, save
 
   tabs.add = async ({ name } = {}) => {
     const d = new Doc();
-    d.load({ meta: { name: name || freshName() } });
+    d.load({ meta: { name: name || freshName(), units: newDrawingUnits() } });
     d.markSaved();
     const r = { id: nextId++, store: d, report: null };
     tabs.list.push(r);
     await tabs.switchTo(r.id);
+    try { await host.onNewDrawing?.(); } catch { /* a startup file must not stop a tab from opening */ }   // acaddoc.lsp (0.7 D7.28)
     return r.id;
   };
 
@@ -89,7 +91,7 @@ export function createDocTabs({ doc, view, engine, host, strip, el, t, ask, save
       }
     }
     if (tabs.list.length === 1) {   // the last drawing: a new empty one takes its place
-      doc.load({ meta: { name: 'Drawing1' } });
+      doc.load({ meta: { name: 'Drawing1', units: newDrawingUnits() } });
       doc.markSaved();
       r.report = null; host.report?.set?.(null);
       view.restorePanes(null);

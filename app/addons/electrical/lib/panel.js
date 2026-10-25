@@ -41,19 +41,19 @@ export function panelSchedule(inst, board, lengths = new Map()) {
   const list = boardCircuits(inst, board);
   const fmt = (n, d = 0) => (Number.isFinite(n) ? n.toFixed(d) : '');
   const columns = [
-    { key: 'circuit', label: t('col.circuit') }, { key: 'desc', label: t('col.desc') }, { key: 'breaker', label: t('col.breaker') },
+    { key: 'circuit', label: t('col.circuit') }, { key: 'desc', label: t('col.desc') }, { key: 'breaker', label: t('col.breaker') }, { key: 'rcd', label: t('col.rcd') },
     { key: 'phase', label: t('col.phase') }, { key: 'load', label: t('col.load') }, { key: 'current', label: t('col.current') },
     { key: 'cable', label: t('col.cable.type') }, { key: 'length', label: t('col.length') }, { key: 'devices', label: t('col.devices') },
   ];
   const rows = list.map((c) => {
     const len = lengths.get(c.name);
-    return { circuit: c.name, desc: c.desc, breaker: c.breaker ? fmt(c.breaker) + ' A' + (c.curve ? ' ' + c.curve : '') : '', phase: c.phase,
+    return { circuit: c.name, desc: c.desc, breaker: c.breaker ? fmt(c.breaker) + ' A' + (c.curve ? ' ' + c.curve : '') : '', rcd: c.rcd || '', phase: c.phase,
       load: fmt(c.watts) + ' W', current: fmt(currentOf(c), 1) + ' A', cable: c.cable, length: len && len.routed ? fmt(len.metres, 1) + ' m' : '', devices: String(c.loads.length) };
   });
   const ph = phaseLoads(list);
-  rows.push({ circuit: t('panel.total'), desc: '', breaker: '', phase: '', load: fmt(ph.total) + ' W', current: '', cable: '', length: '', devices: String(list.reduce((a, c) => a + c.loads.length, 0)) });
-  for (const p of PHASES) rows.push({ circuit: p, desc: '', breaker: '', phase: '', load: fmt(ph[p]) + ' W', current: '', cable: '', length: '', devices: '' });
-  rows.push({ circuit: t('panel.unbalance'), desc: '', breaker: '', phase: '', load: fmt(ph.unbalance * 100, 0) + ' %', current: '', cable: '', length: '', devices: '' });
+  rows.push({ circuit: t('panel.total'), desc: '', breaker: '', rcd: '', phase: '', load: fmt(ph.total) + ' W', current: '', cable: '', length: '', devices: String(list.reduce((a, c) => a + c.loads.length, 0)) });
+  for (const p of PHASES) rows.push({ circuit: p, desc: '', breaker: '', rcd: '', phase: '', load: fmt(ph[p]) + ' W', current: '', cable: '', length: '', devices: '' });
+  rows.push({ circuit: t('panel.unbalance'), desc: '', breaker: '', rcd: '', phase: '', load: fmt(ph.unbalance * 100, 0) + ' %', current: '', cable: '', length: '', devices: '' });
   return { title: t('report.panel', { board: board?.tag || t('panel.noboard') }), columns, rows, phases: ph, board };
 }
 

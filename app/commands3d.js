@@ -359,6 +359,15 @@ export function install3d(def, opt, lookup) {
     const io = await import('./m3d/io.js');
     const name = (c.doc.meta.name || 'Drawing1') + '.' + kind;
     let data, mime;
+    if (kind === 'usda' || kind === 'usdc' || kind === 'usdz') {
+      // 0.7 XF.8 (session usd): USD through usd-cadcraft.js on cc-usd (./usd/), loaded when used
+      const { cadUsd } = await import('./usd-cadcraft.js');
+      const r = cadUsd(m3, { format: kind, name: c.doc.meta.name || 'Drawing1' });
+      if (!c.host.saveBlob) { c.print(t('cmd3d.export3d.downloading_not_available_here')); return; }
+      c.host.saveBlob(name, r.data, kind === 'usda' ? 'model/vnd.usda' : kind === 'usdz' ? 'model/vnd.usdz+zip' : 'application/octet-stream');
+      c.print(t('usd.done', { name, n: r.report.objects }));
+      return;
+    }
     if (kind === 'glb') { data = io.exportGLB(m3); mime = 'model/gltf-binary'; }
     else if (kind === 'obj') { data = io.exportOBJ(m3); mime = 'text/plain'; }
     else { data = io.exportSTL(m3); mime = 'model/stl'; }
@@ -367,14 +376,21 @@ export function install3d(def, opt, lookup) {
     c.print(t('cmd3d.export3d.saved_' + (kind === 'stl' ? 'stl' : kind === 'glb' ? 'glb' : 'obj'), { name }));
   }
   def('EXPORT3D', ['3DEXPORT'], async (c) => {
-    const v = await c.keyword(t('cmd3d.export3d.export_3d_model'), { options: [opt('G', 'GLB'), opt('O', 'OBJ'), opt('S', 'STL')], default: 'G' });
+    const v = await c.keyword(t('cmd3d.export3d.export_3d_model'), { options: [opt('G', 'GLB'), opt('O', 'OBJ'), opt('S', 'STL'), opt('U', 'USD')], default: 'G' });
     const k = v?.option || (v === 'G' ? 'G' : null);
     if (!k) return;
-    await export3d(c, { G: 'glb', O: 'obj', S: 'stl' }[k]);
+    await export3d(c, { G: 'glb', O: 'obj', S: 'stl', U: 'usdz' }[k]);
   }, { help: t('cmd3d.export3d.export_3d_model_glb') });
   def('STLOUT', [], (c) => export3d(c, 'stl'), { help: t('cmd3d.stlout.export_3d_model_stl') });
   def('OBJOUT', [], (c) => export3d(c, 'obj'), { help: t('cmd3d.objout.export_3d_model_obj') });
   def('GLBOUT', [], (c) => export3d(c, 'glb'), { help: t('cmd3d.glbout.export_3d_model_glb') });
+  // 0.7 XF.8: USD as text, binary or a package (docs/USD-CONVENTIONS.md)
+  def('USDOUT', [], async (c) => {
+    const v = await c.keyword(t('usd.cad.format'), { options: [opt('A', '.usda'), opt('C', '.usdc'), opt('Z', '.usdz')], default: 'Z' });   // i18n-ignore: file extensions
+    const k = v?.option || null;
+    if (!k) return;
+    await export3d(c, { A: 'usda', C: 'usdc', Z: 'usdz' }[k]);
+  }, { help: t('usd.cad.usdout') });
 
   // ---- 2D commands that act on the 3D selection while the 3D tab is open ----
   const wrap = (name, fn3d) => {

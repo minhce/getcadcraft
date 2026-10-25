@@ -27,7 +27,7 @@ Every dimension carries its own set of sizes: text height, arrow size, decimals,
 Every size is multiplied by the **overall scale**. Set the sizes as you want them on paper (2.5 mm text), and set the overall scale to the plot scale (50 for 1:50). The text is then 2.5 × 50 = 125 drawing units tall, which plots at 2.5 mm.
 
 :::note
-CadCraft can't make a new named dimension style yet. It has one set of settings for new dimensions, and each dimension keeps the settings it was made with. A drawing you open keeps its named styles: select a dimension and choose one under {{ui:Dimension style}} in {{ui:Properties}} to give it that style's settings.
+Named dimension styles are managed with {{cmd:DIMSTYLE}}: see the section below. Each dimension also keeps the settings it was made with, so you can still change one dimension alone in {{ui:Properties}}.
 :::
 
 ## Set the sizes for new dimensions
@@ -37,7 +37,8 @@ Either way below changes only dimensions you make afterwards.
 ### In the Current settings panel
 
 1. Press {{key:Esc}} so nothing is selected. On the {{ui:Model}} tab the right panel reads {{ui:Current settings}}.
-2. Under {{ui:New dimensions}}, click in {{ui:Overall scale}}, type `50` and press {{key:Enter}}.
+2. Scroll down the panel to {{ui:New dimensions}}, past the layer, colour, units and {{ui:Layer 0}} rows (on a small screen
+   it starts below the bottom edge). Click in {{ui:Overall scale}}, type `50` and press {{key:Enter}}.
 3. Set {{ui:Text height}}, {{ui:Arrow size}} and {{ui:Decimals}} the same way if you want other values.
 
 The status bar confirms each one, for example "Overall scale for new dimensions: 50".
@@ -69,8 +70,14 @@ A saved DWG or DXF keeps the choice as the dimension's measurement scale (DIMLFA
 
 ## Change dimensions you already made
 
-1. Click one dimension.
-2. The right panel shows {{ui:Kind}}, {{ui:Measured}}, {{ui:Text}}, {{ui:Text height}}, {{ui:Arrow size}}, {{ui:Decimals}} and {{ui:Overall scale}}.
+1. Click one dimension. The right panel's heading reads {{ui:Dimension}}.
+2. The settings are in sections; scroll down the panel to reach the later ones:
+   - {{ui:General}}: {{ui:Dimension style}}
+   - {{ui:Geometry}}: {{ui:Kind}} and {{ui:Measurement}} (read only)
+   - {{ui:Text}}: {{ui:Text override}} and {{ui:Text height}}
+   - {{ui:Lines and arrows}}: {{ui:Arrow size}}
+   - {{ui:Fit}}: {{ui:Overall scale}}
+   - {{ui:Primary units}}: {{ui:Decimals}}
 3. Type a new value and press {{key:Enter}}.
 
 The dimension redraws at once. For angular dimensions, {{ui:Decimals (°)}} sets the decimals of the angle.
@@ -91,3 +98,22 @@ Some dimensions can only be read as drawn, not as editable dimensions; the panel
 - **Decimals show fewer digits than set.** Trailing zeros are dropped: 2 decimals show `1250` and `1250.5`, not `1250.00`.
 - **Text is the right height on paper in a viewport but wrong in a model plot.** The overall scale must match the scale you plot at. Plotting at Fit to paper gives an odd scale; choose a standard scale in the plot dialog.
 - **Units such as mm or m in the text.** Choose {{ui:Units in the text}} (see [Dimensions in mm, cm, m or km](topic:dimension-settings#dimensions-in-mm-cm-m-or-km)). For any other word after the number, type it in an override: `<> TYP.`.
+
+## Named dimension styles
+
+Type `DIMSTYLE` (`D`) to open the {{ui:Dimension style manager}}. It lists the drawing's styles, how many dimensions use each, and which one is current. **Standard** is always there.
+
+- {{ui:Set current}}: new dimensions use that style's settings and carry its name.
+- {{ui:New…}}: a new style that starts as a copy of one you choose.
+- {{ui:Modify…}}: the same fields as the dimension section of {{ui:Properties}} (lines and arrows, text, fit, units, alternate units, tolerances). Press {{ui:OK}} and the style changes **and every dimension that uses it changes with it**, setting by setting. A setting you changed on one dimension alone stays as it is unless the style changed that setting.
+- {{ui:Rename…}} and {{ui:Delete}}: Standard can't be renamed or deleted, nor can the current style or one that dimensions use.
+- {{ui:Compare…}}: what differs between two styles.
+- {{ui:Apply to selected}}: select dimensions first; they take the style's settings and its name.
+
+`-DIMSTYLE` does the same on the command line: `Restore`, `Save` (the current settings, including what you typed with {{cmd:DIMTXT}} and the others, under a name), `Delete`, `Apply`, `Compare`, `reName`, `List`.
+
+The styles are saved in a DWG or DXF (its dimension style table) and read from the files you open. The *current* style is not saved: a drawing opens with Standard current. Standard keeps its own settings while another style is current.
+
+## Change dimension text and extension lines
+
+{{cmd:DIMEDIT}} (`DED`) works on the dimensions you select: **Home** puts the text back where the style puts it, **New** types other text (`<>` stands for the measurement), **Rotate** turns the text, **Oblique** slants the extension lines of linear and aligned dimensions to an angle you type (press {{key:Enter}} for none). {{cmd:DIMTEDIT}} moves the text to the **Left**, **Right** or **Center** of the dimension line, or turns it (**Angle**), or sends it **Home**. The text always sits on the dimension line: it can't be dragged to a free place.

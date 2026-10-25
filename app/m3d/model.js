@@ -12,6 +12,9 @@
  *                                           front), loops[1..] = holes (clockwise); every loop segment
  *                                           is also an edge
  *   insts  Map<id, {def, m, name?}>        instances of other definitions, m = 4×4 column-major
+ * A mesh definition (0.7 MD.1, kind 'mesh', `MeshDef`) holds a `Mesh` (mesh.js: half-edge n-gons with UVs and other
+ * attributes) instead; code reading verts/edges/faces sees it as push/pull geometry. Its undo is by deltas: snapshots
+ * keep {ref, v} for it, and the mesh walks its own journal (Model.meshEdit).
  * Guides (lines and points from the tape measure), dimensions (between two points, attached to the vertices
  * they were placed on; giving one a new length stretches the geometry: setDimLength) and scenes (saved
  * cameras with their styles) live on the model. Every edit goes through `model.change(label, fn)` — one undo step, JSON snapshots.
@@ -35,10 +38,15 @@ import {
   frame, to2, rayTri, ident, mmul, translation, apply, applyDir, invert, det3, bboxAdd,
 } from './vec.js';
 import { earcut } from './earcut.js';
+import { BoxTree, boxesOf } from './bvh.js';
 import { t } from "./i18n.js";
+import { Mesh, FL_SHARP, FL_HIDE } from './mesh.js';
 
 export const FORMAT = 'modelcraft';
-export const VERSION = 1;
+// the newest file version this kernel reads. Files are written as version 1 unless they hold a mesh (0.7 MD.1: 2), so
+// older builds keep opening every file that has none.
+export const VERSION = 2;
+export const MESH_FILE_VERSION = 2;
 const MAX_UNDO = 200;
 const key = (a, b) => (a < b ? a + '|' + b : b + '|' + a);
 
@@ -56,12 +64,168 @@ export class Def {
     this.insts = new Map();
     this.splines = new Map();    // curve id → {pts: points clicked (def coordinates), closed, segs} (0.4 M27: editable curves)
     this.next = 1;
+    this.rev = 0;                // goes up when a scoped change edits it in place (Model.change's scope)
     this._ek = null;
   }
 }
 
 const nid = (def) => def.next++;
 export function vAdd(def, p) { const id = nid(def); def.verts.set(id, [p[0], p[1], p[2]]); return id; }
+
+/**
+ * A mesh definition (0.7 MD.1): kind 'mesh', its geometry one `Mesh` (mesh.js: half-edges, n-gons, UVs and other
+ * attributes, delta undo). It is placed like a group or component (a placement's paint, tag, hiding all work); it holds
+ * no placements of its own. Code that reads push/pull geometry (verts, edges, faces) sees the mesh as that geometry,
+ * made when asked and kept while the mesh is unchanged (`meshGeometry`): faces flat within 1 µm stay n-gons, others
+ * come as triangles; sharp and boundary edges are hard, the rest soft. Write to the mesh, never to that copy.
+ */
+export class MeshDef extends Def {
+  constructor(id, name, mesh) {
+    super(id, 'mesh', name);
+    this.mesh = mesh;
+    this.mods = [];        // 0.7 MD.3: the modifier stack (mesh/modifiers.js), plain data, kept in undo and the file
+    this.lattice = null;   // 0.7 MD.3: when this mesh is a lattice cage, {res, min, max, ids} (the Lattice modifier)
+    this.curve = null;     // 0.7 MD.6: a curve object: its splines and shape (mesh/curve.js); the mesh shown is made from it
+  }
+  /** What shows, exports and prints: the mesh with its modifiers (MESH_HOOKS.shown, the page's), else the mesh. */
+  get shown() { return ((this.mods.length || this.curve || MESH_HOOKS.deforms?.(this)) && MESH_HOOKS.shown?.(this)) || this.mesh; }
+  /** What renders (pictures, videos): each modifier's render setting (Subdivision's render levels, render-only ones). */
+  get rendered() { return ((this.mods.length || this.curve || MESH_HOOKS.deforms?.(this)) && MESH_HOOKS.rendered?.(this)) || this.shown; }
+  get verts() { return meshGeometry(this.shown).verts; }
+  set verts(x) {}
+  get edges() { return meshGeometry(this.shown).edges; }
+  set edges(x) {}
+  get faces() { return meshGeometry(this.shown).faces; }
+  set faces(x) {}
+  get _ek() { return this.mesh ? meshGeometry(this.shown)._ek : null; }
+  set _ek(x) { if (this.mesh) meshGeometry(this.shown)._ek = x; }
+  get next() { return this.mesh ? meshGeometry(this.shown).next : 1; }
+  set next(x) {}
+}
+/**
+ * What the page adds to meshes (0.7 MD.3), so the kernel stays flat: `clean(mods)` vets a modifier stack from a file or
+ * an undo copy (without it a stack is dropped), `cleanLattice(x, mesh)` a lattice cage's description, `shown(def)` → the
+ * evaluated mesh (or null: show the mesh itself), `rendered(def)` → the same with the render settings (worked out at once),
+ * `cleanCurve(x)` a curve object's data (MD.6; without it a curve is dropped), `lines(def)` → Float32Array of line
+ * segments the view draws with a curve object (the curve itself, so a curve with no thickness still shows). ModelCraft sets them (mesh/mod-eval.js); other apps carry none.
+ * 0.7 AN.4/AN.2 (session `anim`, owner's grant 2026-10-23): `deforms(def)` → true while shape keys or a skin move the mesh,
+ * `deform(def, mesh)` → the mesh deformed (or null: as it is), the start of the modifier stack, `deformKey(def)` → a stamp of
+ * the pose (part of the modifiers' cache key). ModelCraft sets them (anim/deform.js); without them nothing deforms.
+ */
+export const MESH_HOOKS = { clean: null, cleanLattice: null, cleanCurve: null, shown: null, rendered: null, lines: null, deform: null, deforms: null, deformKey: null };
+export function setMeshHooks(h) { Object.assign(MESH_HOOKS, h); }
+const modsOf = (j) => (Array.isArray(j?.mods) && MESH_HOOKS.clean ? MESH_HOOKS.clean(j.mods) : []);
+const latticeOf = (j, mesh) => (j?.lattice && MESH_HOOKS.cleanLattice ? MESH_HOOKS.cleanLattice(j.lattice, mesh) : null);
+const curveOf = (j) => (j?.curve && MESH_HOOKS.cleanCurve ? MESH_HOOKS.cleanCurve(j.curve) : null);
+const meshGeo = new WeakMap();   // Mesh → {v (its state), def: the push/pull geometry made from it}
+/** The push/pull geometry of a mesh (a plain Def, cached per mesh state): see MeshDef. */
+export function meshGeometry(mesh) {
+  let g = meshGeo.get(mesh);
+  if (g && g.v === mesh.v && !mesh.recording) return g.def;
+  const d = new Def('mesh', 'group', '');
+  geometryFromMesh(mesh, d);
+  meshGeo.set(mesh, { v: mesh.v, def: d });
+  return d;
+}
+/** Write a mesh's faces and edges into an empty Def `d` as push/pull geometry. → {faces, split} (split: faces made of triangles). */
+export function geometryFromMesh(mesh, d) {
+  const vid = new Int32Array(mesh.nv);
+  for (let v = 0; v < mesh.nv; v++) if (!mesh.vertDead(v)) vid[v] = vAdd(d, mesh.pos(v));
+  const T = mesh.triangulate({ hidden: true }), byFace = new Map();
+  for (let i = 0; i < T.n; i++) { const f = T.face[i]; let a = byFace.get(f); if (!a) byFace.set(f, (a = [])); a.push(i); }
+  const vs = [];
+  let split = 0, faces = 0;
+  for (let f = 0; f < mesh.nf; f++) {
+    if (mesh.faceDead(f)) continue;
+    const paint = mesh.facePaint(f) || undefined, hid = (mesh.fFl[f] & FL_HIDE) !== 0;
+    mesh.faceVerts(f, vs);
+    if (vs.length === 3 || mesh.facePlanar(f, EPS)) { fAdd(d, [vs.map((v) => vid[v])], paint, undefined, hid); faces++; continue; }
+    split++;
+    for (const i of byFace.get(f) || []) {
+      const t = [0, 1, 2].map((k) => vid[mesh.hV[T.tri[i * 3 + k]]]);
+      if (new Set(t).size === 3) { fAdd(d, [t], paint, undefined, hid); faces++; }
+    }
+  }
+  // edges: hard where the mesh's edge is sharp or open, soft elsewhere (and inside a face made of triangles)
+  for (const [, e] of d.edges) e.soft = true;
+  for (let h = 0; h < mesh.nh; h++) {
+    if (mesh.heDead(h) || (mesh.hTw[h] >= 0 && mesh.hTw[h] < h)) continue;
+    if (mesh.hTw[h] >= 0 && !(mesh.hFl[h] & FL_SHARP)) continue;
+    const id = edgeBetween(d, vid[mesh.hV[h]], vid[mesh.head(h)]);
+    if (id !== null) delete d.edges.get(id).soft;
+  }
+  return { faces, split };
+}
+/** Add src's own faces and edges, moved by m, to dst (points welded at 0.01 µm; faces without paint take `paint`). */
+function copyInto(dst, src, m, paint = null) {
+  const grid = dst._grid || (dst._grid = new Map());
+  const vmap = new Map(), mirror = det3(m) < 0;
+  const cv = (v) => {
+    let id = vmap.get(v);
+    if (id !== undefined) return id;
+    const p = apply(m, src.verts.get(v)), k = p.map((x) => Math.round(x * 1e8)).join(',');
+    id = grid.get(k);
+    if (id === undefined) { id = vAdd(dst, p); grid.set(k, id); }
+    vmap.set(v, id);
+    return id;
+  };
+  for (const e of src.edges.values()) eAdd(dst, cv(e.a), cv(e.b), e.soft, undefined, e.hidden);
+  for (const f of src.faces.values()) {
+    let loops = f.loops.map((l) => l.map(cv));
+    if (mirror) loops = loops.map((l) => l.slice().reverse());
+    if (loops.some((l) => new Set(l).size !== l.length)) continue;
+    fAdd(dst, loops, f.color || paint || undefined, undefined, f.hidden);
+  }
+}
+/**
+ * A Mesh from a definition's own push/pull geometry (`def` may be any Def; `m` a matrix applied to its points). Faces
+ * without holes become n-gons, faces with holes triangles; hard edges become sharp; paint per face (none = the
+ * placement's); an image paint's placement becomes the corner UVs of layer 'uv'. Loose edges are counted, not kept.
+ * → {mesh, loose, dropped}.
+ */
+export function meshFromGeometry(def, m = null) {
+  const ids = new Map(), pts = [];
+  const vi = (v) => { let i = ids.get(v); if (i === undefined) { i = pts.length; ids.set(v, i); const p = def.verts.get(v); pts.push(m ? apply(m, p) : p); } return i; };
+  const faces = [], paints = [], uvs = [], mirror = m && det3(m) < 0;
+  let anyUV = false;
+  for (const f of def.faces.values()) {
+    const loops = f.loops.length === 1 ? [f.loops[0]] : faceTris(def, f);
+    for (const l of loops) {
+      let ring = l.map(vi);
+      if (mirror) ring = ring.reverse();
+      faces.push(ring); paints.push(f.color || null);
+      if (isImagePaint(f.color)) { anyUV = true; uvs.push(ring.map((i) => imageUV(f.color, pts[i]))); } else uvs.push(null);
+    }
+  }
+  const p = new Float64Array(pts.length * 3);
+  pts.forEach((q, i) => { p[i * 3] = q[0]; p[i * 3 + 1] = q[1]; p[i * 3 + 2] = q[2]; });
+  const fc = new Int32Array(faces.map((r) => r.length)), fi = new Int32Array(faces.flat());
+  const mesh = new Mesh(), keep = mesh._bulk(p, pts.length, fc, fi);
+  const cs = [];
+  if (anyUV) mesh.addAttr('uv', 'corner', 2);
+  let dropped = 0;
+  faces.forEach((r, i) => {
+    const f = keep.faceOf[i];
+    if (f < 0) { dropped++; return; }
+    if (paints[i]) mesh.fMat[f] = mesh.paintIndex(paints[i]);
+    if (uvs[i]) { const a = mesh.attrArray('uv'); mesh.faceCorners(f, cs).forEach((c, q) => { a[c * 2] = uvs[i][q][0]; a[c * 2 + 1] = uvs[i][q][1]; }); }
+  });
+  // hard edges → sharp (on both halves); a vertex split into fans still maps back to its kernel vertex
+  const back = new Map([...ids].map(([v, i]) => [i, v]));
+  keep.vertFrom.forEach((src, k) => back.set(pts.length + k, back.get(src)));
+  for (let h = 0; h < mesh.nh; h++) {
+    const t = mesh.hTw[h];
+    if (t < 0 || t < h) continue;
+    const ea = back.get(mesh.hV[h]), eb = back.get(mesh.head(h));
+    const id = ea !== undefined && eb !== undefined ? edgeBetween(def, ea, eb) : null;
+    const e = id !== null ? def.edges.get(id) : null;
+    if (e && !e.soft) { mesh.hFl[h] |= FL_SHARP; mesh.hFl[t] |= FL_SHARP; }
+  }
+  let loose = 0;
+  const ef = edgeFaces(def);
+  for (const e of def.edges.values()) if (!(ef.get(key(e.a, e.b)) || []).length) loose++;
+  return { mesh, loose, dropped };
+}
 export function findVert(def, p, tol = EPS) { for (const [id, q] of def.verts) if (near(p, q, tol)) return id; return null; }
 function ek(def) {
   if (!def._ek) { def._ek = new Map(); for (const [id, e] of def.edges) def._ek.set(key(e.a, e.b), id); }
@@ -137,6 +301,16 @@ function vertFaces(def) {
 export function faceTris(def, f) {
   const n = faceNormal(def, f);
   if (!len(n)) return [];
+  // the common faces of big (imported) models: a triangle is itself, a quad is split along a diagonal that keeps both
+  // halves facing front (either one for a convex quad, the one through the dent for a concave one)
+  if (f.loops.length === 1 && (f.loops[0].length === 3 || f.loops[0].length === 4)) {
+    const l = f.loops[0];
+    if (l.length === 3) return [[l[0], l[1], l[2]]];
+    const P = l.map((v) => def.verts.get(v));
+    const up = (a, b, c) => dot(cross(sub(P[b], P[a]), sub(P[c], P[a])), n) > 0;
+    if (up(0, 1, 2) && up(0, 2, 3)) return [[l[0], l[1], l[2]], [l[0], l[2], l[3]]];
+    if (up(1, 2, 3) && up(1, 3, 0)) return [[l[1], l[2], l[3]], [l[1], l[3], l[0]]];
+  }
   const fr = frame(n);
   const flat = [], ids = [], holes = [];
   f.loops.forEach((l, i) => {
@@ -169,18 +343,52 @@ function inPoly(pt, poly) {
   return inside;
 }
 const inRegion = (pt, loops) => inPoly(pt, loops[0]) && !loops.slice(1).some((h) => inPoly(pt, h));
-/** A point well inside a region (outer + holes): the centroid of its largest triangle. */
-function samplePoint(loops) {
+/** Distance from 2D point p to segment a–b. */
+function segDist2(p, a, b) {
+  const ux = b[0] - a[0], uy = b[1] - a[1], L2 = ux * ux + uy * uy;
+  let s = L2 > 0 ? ((p[0] - a[0]) * ux + (p[1] - a[1]) * uy) / L2 : 0;
+  s = s < 0 ? 0 : s > 1 ? 1 : s;
+  return Math.hypot(p[0] - a[0] - s * ux, p[1] - a[1] - s * uy);
+}
+/**
+ * A point well inside a region (outer + holes): the centroid of its largest triangle. With `avoid` (polygons: lists of
+ * loops of 2D points) the point is also kept off their edges: reface asks which old faces hold the point, and a point ON
+ * an old face's edge (the edge being merged away, say) is in both faces or in neither depending on the last bit of
+ * rounding, so a region could inherit nothing and be dropped (kernel-print, 2026-10-23: a 2 cm part lost its sides,
+ * because both centroids of a square cut along the other diagonal lie on the old one). Several points of the largest
+ * triangles are tried and the one farthest from every avoided edge wins (the first clear by 10 µm, or the best).
+ */
+function samplePoint(loops, avoid = null) {
   const flat = [], holes = [], pts = [];
   loops.forEach((l, i) => { if (i) holes.push(pts.length); for (const p of l) { flat.push(p[0], p[1]); pts.push(p); } });
   const t = earcut(flat, holes);
-  let best = null, ba = -1;
+  const tris = [];
   for (let i = 0; i < t.length; i += 3) {
     const a = pts[t[i]], b = pts[t[i + 1]], c = pts[t[i + 2]];
-    const ar = Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]));
-    if (ar > ba) { ba = ar; best = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3]; }
+    tris.push({ a, b, c, ar: Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) });
   }
-  return ba > 1e-14 ? best : null;
+  if (!tris.length) return null;
+  tris.sort((x, y) => y.ar - x.ar);
+  if (!(tris[0].ar > 1e-14)) return null;
+  const at = (q, wa, wb, wc) => [q.a[0] * wa + q.b[0] * wb + q.c[0] * wc, q.a[1] * wa + q.b[1] * wb + q.c[1] * wc];
+  const first = at(tris[0], 1 / 3, 1 / 3, 1 / 3);
+  if (!avoid || !avoid.length) return first;
+  const clear = (p) => {
+    let m = Infinity;
+    for (const poly of avoid) for (const l of poly) for (let i = 0; i < l.length; i++) { const d = segDist2(p, l[i], l[(i + 1) % l.length]); if (d < m) m = d; }
+    return m;
+  };
+  const W = [[1 / 3, 1 / 3, 1 / 3], [0.5, 0.25, 0.25], [0.25, 0.5, 0.25], [0.25, 0.25, 0.5]];
+  let best = first, bd = -1;
+  for (const q of tris.slice(0, 4)) {
+    if (!(q.ar > 1e-14)) break;
+    for (const w of W) {
+      const p = at(q, w[0], w[1], w[2]), d = clear(p);
+      if (d > bd) { bd = d; best = p; }
+      if (d > 10 * EPS) return best;
+    }
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +421,76 @@ export function vertexAt(def, p) {
     if (dist(add(A, mul(u, s)), p) <= EPS) { splitEdge(def, eid, id); break; }
   }
   return id;
+}
+
+/**
+ * vertexAt for many points in a row (exploding a big group): the same answers, found through a grid of def's vertices
+ * and trees of its edges instead of a pass over all of them for each point. `edgeAdded(id)` after each new edge. When an
+ * edge is split (a point on another edge: rare), or after `stop()`, it falls back to vertexAt itself.
+ */
+function vertexIndex(def) {
+  let slow = false, seq = 0;
+  const cell = (x) => Math.floor(x / EPS);
+  const vgrid = new Map(), vorder = new Map();
+  const putV = (id, p) => {
+    vorder.set(id, seq++);
+    const k = cell(p[0]) + ',' + cell(p[1]) + ',' + cell(p[2]);
+    let l = vgrid.get(k);
+    if (!l) vgrid.set(k, (l = []));
+    l.push(id);
+  };
+  for (const [id, p] of def.verts) putV(id, p);
+  // the edges there now (a tree, in their order) and the ones added since (a list: they are checked after, in order)
+  const old = [...def.edges.keys()], eorder = new Map(old.map((id, i) => [id, i]));
+  const tree = new BoxTree(boxesOf(old.length, (i) => { const e = def.edges.get(old[i]); return [def.verts.get(e.a), def.verts.get(e.b)]; }, EPS));
+  const added = [], addedGrid = new Map();
+  let G = 0;   // the new edges' grid: cells about as long as the first of them
+  const gk = (x, y, z) => x + ',' + y + ',' + z;
+  const onEdge = (eid, p) => {
+    const e = def.edges.get(eid);
+    if (!e) return false;
+    const A = def.verts.get(e.a), B = def.verts.get(e.b), u = sub(B, A), L2 = dot(u, u);
+    const s = dot(sub(p, A), u) / L2;
+    return s > 0 && s < 1 && dist(add(A, mul(u, s)), p) <= EPS;
+  };
+  return {
+    at(p) {
+      if (slow) return vertexAt(def, p);
+      let have = null, best = Infinity;
+      const cx = cell(p[0]), cy = cell(p[1]), cz = cell(p[2]);
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++)
+        for (const id of vgrid.get(gk(cx + dx, cy + dy, cz + dz)) || []) if (vorder.get(id) < best && near(p, def.verts.get(id))) { have = id; best = vorder.get(id); }
+      if (have !== null) return have;
+      const id = vAdd(def, p);
+      putV(id, p);
+      // the first edge (in def's order) it lands inside: an old one from the tree, else a new one from the grid
+      let hit = null, ho = Infinity;
+      tree.box(p, p, (i) => { if (i < ho && onEdge(old[i], p)) { hit = old[i]; ho = i; } });
+      if (hit === null) {
+        let first = Infinity;
+        if (G) for (const j of addedGrid.get(gk(Math.floor(p[0] / G), Math.floor(p[1] / G), Math.floor(p[2] / G))) || []) if (j < first && onEdge(added[j], p)) first = j;
+        if (first < Infinity) hit = added[first];
+      }
+      if (hit !== null) { splitEdge(def, hit, id); slow = true; }
+      return id;
+    },
+    edgeAdded(eid) {
+      if (slow || eid === null || eorder.has(eid)) return;
+      eorder.set(eid, Infinity);
+      const e = def.edges.get(eid), A = def.verts.get(e.a), B = def.verts.get(e.b), j = added.length;
+      if (!G) G = Math.max(dist(A, B), 64 * EPS);
+      added.push(eid);
+      const lo = [0, 1, 2].map((k) => Math.floor((Math.min(A[k], B[k]) - EPS) / G)), hi = [0, 1, 2].map((k) => Math.floor((Math.max(A[k], B[k]) + EPS) / G));
+      if ((hi[0] - lo[0] + 1) * (hi[1] - lo[1] + 1) * (hi[2] - lo[2] + 1) > 4096) { slow = true; return; }   // a very long edge: back to the plain way
+      for (let x = lo[0]; x <= hi[0]; x++) for (let y = lo[1]; y <= hi[1]; y++) for (let z = lo[2]; z <= hi[2]; z++) {
+        const k = gk(x, y, z);
+        let l = addedGrid.get(k);
+        if (!l) addedGrid.set(k, (l = []));
+        l.push(j);
+      }
+    },
+    stop() { slow = true; },
+  };
 }
 
 /**
@@ -337,7 +615,7 @@ export function reface(def, plane, { newEdges = new Set(), hint = null } = {}) {
   const reused = new Set();
   for (const c of pos) {
     const holes = holesOf.get(c);
-    const pt = samplePoint([c.poly, ...holes.map((h) => h.poly)]);
+    const pt = samplePoint([c.poly, ...holes.map((h) => h.poly)], old.map((o) => o.poly));
     if (!pt) continue;
     let inherit = null, sgn = 0, mixed = false;
     for (const o of old) {
@@ -613,21 +891,34 @@ export function intersectFaces(model, path, sel, others = 'model') {
   return ctx.def.edges.size - before;
 }
 
-/** Remove the edge between two coplanar faces facing the same way, merging them. */
+/**
+ * Remove the edges of `eids` that lie between two coplanar faces facing the same way, merging those faces. The edges are
+ * taken out a plane at a time and each plane is re-faced once (kernel-print, 2026-10-23: one reface per edge made a
+ * boolean result of a few thousand triangles take minutes); merging only joins faces of one plane, so an edge that
+ * qualifies at the start still does after any other merge on that plane.
+ */
 export function mergeCoplanar(def, eids) {
+  const ef = edgeFaces(def), planes = [];
   for (const eid of eids) {
     const e = def.edges.get(eid);
     if (!e) continue;
-    const fs = edgeFaces(def).get(key(e.a, e.b)) || [];
+    const fs = ef.get(key(e.a, e.b)) || [];
     if (fs.length !== 2) continue;
     const f1 = def.faces.get(fs[0]), f2 = def.faces.get(fs[1]);
     const p1 = facePlane(def, f1), p2 = facePlane(def, f2);
     if (dot(p1.n, p2.n) < 1 - 1e-9 || Math.abs(p1.d - p2.d) > EPS) continue;
-    eRemove(def, eid);
-    reface(def, planeFrom(p1.n, def.verts.get(e.a)));
-    removeLooseVerts(def);
-    healCollinear(def, [e.a, e.b]);
+    const pl = planeFrom(p1.n, def.verts.get(e.a));
+    let g = planes.find((q) => samePlane(q.pl, pl));
+    if (!g) planes.push((g = { pl, eids: [], ends: [] }));
+    g.eids.push(eid); g.ends.push(e.a, e.b);
   }
+  for (const g of planes) {
+    for (const eid of g.eids) eRemove(def, eid);
+    reface(def, g.pl);
+  }
+  if (!planes.length) return;
+  removeLooseVerts(def);
+  healCollinear(def, [...new Set(planes.flatMap((g) => g.ends))]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1047,6 +1338,156 @@ export function setCurveRadius(def, cid, r) {
   const k = r / ci.radius, c = ci.center;
   for (const v of ci.verts) def.verts.set(v, add(c, mul(sub(def.verts.get(v), c), k)));
   return curveInfo(def, cid);
+}
+
+// ---- divide into equal parts (0.7 MC-DIVIDE) ----
+export const DIVIDE_MAX = 1000;
+/**
+ * Where n equal parts of an edge or curve would meet (world-free: the definition's coordinates), for previews and for
+ * the divide itself. `what` = {edge: id} or {curve: id, edge?: the edge picked on it}. → {points (the n − 1 new places, or for an arc or circle that is
+ * re-drawn: every corner of the new curve), resegment (true: an arc or circle whose segments are replaced), length} |
+ * null when it is gone.
+ */
+export function dividePlan(def, what, n) {
+  if (!(Number.isInteger(n) && n >= 2 && n <= DIVIDE_MAX)) throw new Error(t('m3d.model.divide_count', { max: DIVIDE_MAX }));
+  if (what.curve === undefined) {
+    const e = def.edges.get(what.edge);
+    if (!e) return null;
+    const a = def.verts.get(e.a), b = def.verts.get(e.b);
+    return { points: Array.from({ length: n - 1 }, (_, i) => add(a, mul(sub(b, a), (i + 1) / n))), resegment: false, length: dist(a, b) };
+  }
+  let ci = curveInfo(def, what.curve);
+  if (!ci) return null;
+  // one curve id can name several separate runs (push/pull gives a pulled circle's top the bottom's id): the run with
+  // the edge picked (else the first) is divided, along its own length
+  const run = curveRun(def, what.curve, what.edge ?? ci.edges[0]);
+  if (run.edges.length !== ci.edges.length) ci = { ...ci, ...run, round: false };
+  // an arc or circle whose own corners nothing else uses, lying flat in its faces' planes: re-drawn with n segments
+  if (ci.round && ci.flat && (ci.kind === 'arc' || ci.kind === 'circle') && ci.verts.length === ci.segs + (ci.closed ? 0 : 1)) {
+    const ve = vertEdges(def), inner = ci.closed ? ci.verts : ci.verts.slice(1, -1);
+    if (inner.every((v) => (ve.get(v) || []).length === 2)) {
+      const p0 = def.verts.get(ci.verts[0]), p1 = def.verts.get(ci.verts[1]), u = norm(sub(p0, ci.center));
+      // which way round the chain runs about the normal
+      const sgn = dot(cross(sub(p0, ci.center), sub(p1, ci.center)), ci.normal) >= 0 ? 1 : -1;
+      const pts = arcPts(ci.center, mul(ci.normal, sgn), u, ci.radius, ci.closed ? 2 * Math.PI : ci.sweep, n);
+      if (ci.closed) pts.pop();
+      else pts[pts.length - 1] = def.verts.get(ci.verts[ci.verts.length - 1]).slice();   // the far end stays exactly where it was
+      pts[0] = p0.slice();
+      return { points: pts, resegment: true, length: ci.radius * (ci.closed ? 2 * Math.PI : ci.sweep), curve: ci };
+    }
+  }
+  // any other curve: equal lengths along its segments
+  const chain = ci.closed ? [...ci.verts, ci.verts[0]] : ci.verts;
+  const P = chain.map((v) => def.verts.get(v));
+  const L = ci.length, out = [];
+  let s0 = 0, i = 0;
+  for (let k = 1; k < n; k++) {
+    const want = (k * L) / n;
+    while (i < P.length - 2 && s0 + dist(P[i], P[i + 1]) < want) { s0 += dist(P[i], P[i + 1]); i++; }
+    const seg = dist(P[i], P[i + 1]);
+    out.push(add(P[i], mul(sub(P[i + 1], P[i]), seg ? Math.min(1, (want - s0) / seg) : 0)));
+  }
+  return { points: out, resegment: false, length: L, curve: ci };
+}
+/**
+ * Divide an edge (`{edge: id}`) or a curve (`{curve: id}`) of `def` into n equal parts (0.7 MC-DIVIDE). A straight edge
+ * gets n − 1 corners; an arc or circle that only its own faces touch is re-drawn with n segments on the true arc (as a
+ * curve: it still selects as one and keeps its radius); any other curve gets corners at equal lengths along it. Faces
+ * keep their place. → {verts (the corners added), edges (every piece, in order)}.
+ */
+export function divideEdges(def, what, n) {
+  const plan = dividePlan(def, what, n);
+  if (!plan) throw new Error(t('m3d.model.divide_gone'));
+  if (plan.resegment) return resegmentCurve(def, plan.curve, plan.points);
+  let chain;
+  if (what.curve === undefined) { const e = def.edges.get(what.edge); chain = [e.a, e.b]; }
+  else chain = plan.curve.closed ? [...plan.curve.verts, plan.curve.verts[0]] : plan.curve.verts.slice();
+  // walk the chain, splitting the segment each new corner lands on (a corner already there is kept, not doubled)
+  const made = [], P = chain.map((v) => def.verts.get(v));
+  let seg = 0, from = chain[0];
+  const cum = [0];
+  for (let k = 0; k + 1 < P.length; k++) cum.push(cum[k] + dist(P[k], P[k + 1]));
+  for (let k = 1; k < n; k++) {
+    const want = (k * cum[cum.length - 1]) / n;
+    while (seg < P.length - 2 && cum[seg + 1] < want - EPS) { seg++; from = chain[seg]; }
+    if (Math.abs(cum[seg + 1] - want) <= EPS) continue;          // lands on an existing corner
+    if (Math.abs(cum[seg] - want) <= EPS) continue;
+    const span = cum[seg + 1] - cum[seg], p = add(P[seg], mul(sub(P[seg + 1], P[seg]), (want - cum[seg]) / span));
+    const eid = edgeBetween(def, from, chain[seg + 1]);
+    if (eid === null) continue;
+    const v = vAdd(def, p);
+    splitEdge(def, eid, v);
+    made.push(v);
+    from = v;
+  }
+  const edges = [];
+  const all = [];
+  for (let k = 0; k + 1 < chain.length; k++) {
+    all.push(chain[k]);
+    const a = def.verts.get(chain[k]), b = def.verts.get(chain[k + 1]);
+    all.push(...made.filter((v) => { const p = def.verts.get(v); return onSegment(p, a, b); }).sort((x, y) => dist(def.verts.get(x), a) - dist(def.verts.get(y), a)));
+  }
+  all.push(chain[chain.length - 1]);
+  for (let k = 0; k + 1 < all.length; k++) { const id = edgeBetween(def, all[k], all[k + 1]); if (id !== null) edges.push(id); }
+  return { verts: made, edges };
+}
+/** The connected run of curve `cid` that holds edge `eid`: {edges, verts (in order), closed, length, segs}. */
+function curveRun(def, cid, eid) {
+  const eids = new Set(curveEdges(def, cid)), adj = new Map();
+  for (const id of eids) { const e = def.edges.get(id); for (const [x, y] of [[e.a, e.b], [e.b, e.a]]) { if (!adj.has(x)) adj.set(x, []); adj.get(x).push(y); } }
+  const e0 = def.edges.get(eids.has(eid) ? eid : [...eids][0]);
+  const seen = new Set([e0.a]), todo = [e0.a];
+  while (todo.length) for (const w of adj.get(todo.pop()) || []) if (!seen.has(w)) { seen.add(w); todo.push(w); }
+  const ends = [...seen].filter((v) => adj.get(v).length === 1);
+  const closed = !ends.length;
+  const verts = [];
+  let cur = ends[0] ?? e0.a, prev = null;
+  while (cur !== undefined && verts.length <= seen.size) { verts.push(cur); const nx = adj.get(cur).find((x) => x !== prev && !verts.includes(x)); prev = cur; cur = nx; }
+  const edges = [...eids].filter((id) => seen.has(def.edges.get(id).a));
+  let length = 0;
+  for (const id of edges) { const e = def.edges.get(id); length += dist(def.verts.get(e.a), def.verts.get(e.b)); }
+  return { edges, verts, closed, length, segs: edges.length };
+}
+const onSegment = (p, a, b) => { const u = sub(b, a), L2 = dot(u, u); const s = L2 ? dot(sub(p, a), u) / L2 : -1; return s > 1e-12 && s < 1 - 1e-12 && dist(add(a, mul(u, s)), p) <= EPS; };
+/** Replace a round curve's corners with `pts` (the first, and for an arc the last, are its ends), keeping its faces. */
+function resegmentCurve(def, ci, pts) {
+  const first = def.edges.get(ci.edges[0]), flags = { soft: !!first.soft, hidden: !!first.hidden };
+  const keep0 = ci.verts[0], keepN = ci.closed ? keep0 : ci.verts[ci.verts.length - 1];
+  const inner = new Set(ci.closed ? ci.verts.slice(1) : ci.verts.slice(1, -1));
+  const nv = [keep0, ...pts.slice(1, ci.closed ? pts.length : -1).map((p) => vAdd(def, p)), ...(ci.closed ? [] : [keepN])];
+  // face loops: the old run of curve corners → the new one, the same way round
+  const pos = new Map(ci.verts.map((v, i) => [v, i]));
+  for (const f of def.faces.values()) f.loops = f.loops.map((l) => {
+    if (!l.some((v) => inner.has(v) || (ci.closed && v === keep0))) return l;
+    if (ci.closed) {
+      // the whole circle is this loop: start at keep0 and run the way the loop runs
+      if (!l.every((v) => pos.has(v)) || l.length !== ci.verts.length) return l;
+      const at = l.indexOf(keep0), next = l[(at + 1) % l.length];
+      const fwd = pos.get(next) === 1;
+      return fwd ? nv.slice() : [nv[0], ...nv.slice(1).reverse()];
+    }
+    const out = [];
+    for (let i = 0; i < l.length; i++) {
+      const v = l[i];
+      if (inner.has(v)) continue;
+      out.push(v);
+      const w = l[(i + 1) % l.length];
+      if (inner.has(w)) {
+        // entering the arc at v: forward when v is its first corner
+        const run = v === keep0 ? nv.slice(1, -1) : nv.slice(1, -1).reverse();
+        out.push(...run);
+      }
+    }
+    return out;
+  });
+  for (const id of ci.edges) eRemove(def, id);
+  for (const v of inner) def.verts.delete(v);
+  const edges = [];
+  for (let i = 0; i + 1 < nv.length + (ci.closed ? 1 : 0); i++) {
+    const id = eAdd(def, nv[i], nv[(i + 1) % nv.length], flags.soft, ci.id, flags.hidden);
+    if (id !== null) edges.push(id);
+  }
+  return { verts: nv.filter((v) => v !== keep0 && v !== keepN), edges };
 }
 
 // ---------------------------------------------------------------------------
@@ -1632,7 +2073,10 @@ export class Model {
     this.undoStack = [];
     this.redoStack = [];
     this.dirty = false;
+    this._editing = 0;   // inside an edit (change, amend, preview): definitions' kept JSON is not used
     this._base = null;
+    this.meshes = new Map();   // 0.7 MD.1: every Mesh a definition or an undo step may refer to, uid → Mesh (gcMeshes trims it)
+    this._gcAt = 0;
     this.uid = newUid();
   }
   get root() { return this.defs.get('root'); }
@@ -1668,6 +2112,30 @@ export class Model {
     const ni = dst.def.insts.get(nidd);
     for (const k of ['name', 'color', 'hidden', 'tag', 'rule']) if (inst[k] !== undefined) ni[k] = inst[k];
     return nidd;
+  }
+  /**
+   * The Outliner's drag (0.6.1): move placement iid of the group open at `from` into the group open at `to` (moveInto:
+   * keeps where it is in the world; the same group = only the order changes), then put it just before or after the
+   * placement `ref` of that group (`where` 'before' | 'after'; ref null = last). The order is the Outliner's and the
+   * file's. → its id in `to`.
+   */
+  moveTo(from, iid, to, ref = null, where = 'before') {
+    const dst = this.context(to);
+    if (ref !== null && ref !== undefined && !dst?.def.insts.has(ref)) throw new Error(t('m3d.model.move_gone'));
+    const nidd = this.moveInto(from, iid, to);
+    if (ref !== nidd) this.reorder(this.context(to).def, nidd, ref ?? null, where);
+    return nidd;
+  }
+  /** Put placement iid of `def` just before / after placement `ref` (null: last). False when nothing moved. */
+  reorder(def, iid, ref = null, where = 'before') {
+    if (!def.insts.has(iid) || (ref !== null && !def.insts.has(ref))) throw new Error(t('m3d.model.move_gone'));
+    if (ref === iid) return false;
+    const all = [...def.insts], mine = all.find(([k]) => k === iid), rest = all.filter(([k]) => k !== iid);
+    rest.splice(ref === null ? rest.length : rest.findIndex(([k]) => k === ref) + (where === 'after' ? 1 : 0), 0, mine);
+    if (rest.every(([k], i) => k === all[i][0])) return false;
+    def.insts.clear();
+    for (const [k, v] of rest) def.insts.set(k, v);
+    return true;
   }
   // ---- what scenes show (0.4 M23) ----
   /** What is hidden now: {insts: paths of hidden placements, tags: hidden tag names, section, cuts}. */
@@ -1731,36 +2199,49 @@ export class Model {
 
   // ---- undo ----
   /** Run fn(model) as one undo step labelled `label`. */
-  change(label, fn) {
-    const before = this.snapshot();
+  /**
+   * Run fn(model) as one undo step labelled `label`. `scope`: the ids of the only definitions fn edits in place (new
+   * definitions it makes do not count; [] = none, as for guides or dimensions): what was built from every other
+   * definition is kept (the view's geometry, snapping's trees, undo's copies), so an edit to a big model costs what it
+   * touched. Without it, everything may have changed.
+   */
+  change(label, fn, scope = null) {
+    const before = this.snap();
     let r;
-    try { r = fn(this); } catch (e) { this.restore(before); throw e; }
-    const after = this.snapshot();
-    if (after !== before) {
-      this.undoStack.push({ label, before, after });
+    this._editing++;
+    try { r = fn(this); } catch (e) { this._editing--; this.restore(before); throw e; }
+    this._editing--;
+    if (scope) { for (const id of scope) { const d = this.defs.get(id); if (d) d.rev++; } this.bumpSafe(); }
+    else this.version++;   // fn edited in place: nothing kept from before it is known to be right any more
+    const after = this.snap();
+    if (!sameSnap(after, before)) {
+      this.undoStack.push(new Step(label, before, after));
       if (this.undoStack.length > MAX_UNDO) this.undoStack.shift();
       this.redoStack = [];
       this.dirty = true;
+      this.gcSoon();
     }
-    this.version++;
     return r;
   }
+  /** Trim mesh journals now and then (every 8 steps while there are meshes). */
+  gcSoon() { if (this.meshes.size && ++this._gcAt % 8 === 0) this.gcMeshes(); }
   canUndo() { return this.undoStack.length > 0; }
   canRedo() { return this.redoStack.length > 0; }
+  // restoring swaps in new definition objects only where they differ, so what was built from the rest stays right
   undo() {
     const s = this.undoStack.pop();
     if (!s) return null;
-    this.restore(s.before);
+    this.restore(s.b);
     this.redoStack.push(s);
-    this.version++; this.dirty = true;
+    this.bumpSafe(); this.dirty = true;
     return s.label;
   }
   redo() {
     const s = this.redoStack.pop();
     if (!s) return null;
-    this.restore(s.after);
+    this.restore(s.a);
     this.undoStack.push(s);
-    this.version++; this.dirty = true;
+    this.bumpSafe(); this.dirty = true;
     return s.label;
   }
   /** The newest undo step (a tool keeps it to amend it), or null. */
@@ -1768,41 +2249,324 @@ export class Model {
   /** Do the newest undo step again as fn(model) from its own start (push/pull: a distance typed after the click). False — and
    *  nothing changed — when `step` is no longer the newest, a preview is open, or fn throws. */
   amendLast(step, fn) {
-    if (!step || this.lastStep() !== step || this._base !== null) return false;
-    this.restore(step.before);
-    try { fn(this); } catch (e) { this.restore(step.after); this.version++; return false; }
-    step.after = this.snapshot();
-    this.redoStack = []; this.dirty = true; this.version++;
+    if (!step || this.lastStep() !== step || this._pv) return false;
+    this.restore(step.b);
+    this._editing++;
+    try { fn(this); } catch (e) { this._editing--; this.restore(step.a); this.bumpSafe(); return false; }
+    this._editing--;
+    this.version++;
+    step.a = this.snap();
+    this.redoStack = []; this.dirty = true;
     return true;
   }
-  /** Live previews (push/pull drag, move): begin → preview(fn)… → commit(label) | abort(). */
-  begin() { this._base = this.snapshot(); }
-  get previewing() { return this._base !== null; }
-  preview(fn) {
-    this.restore(this._base);
-    let r;
-    try { r = fn(this); } catch (e) { this.restore(this._base); r = null; }
-    this.version++;
+  /**
+   * Live previews (push/pull drag, move): begin → preview(fn, scope?)… → commit(label) | abort(). `scope` lists the only
+   * definitions fn changes: each frame then puts back just those (and drops definitions the last frame made) instead
+   * of the whole model, and they come back as new objects, so the view rebuilds only them. Without a scope, every
+   * frame restores the whole model from its starting copy. `_base` is that starting copy as a snapshot, made when asked.
+   */
+  begin() { this._pv = { full: null, defs: new Map(), strs: new Map(), ids: new Set(this.defs.keys()), nextId: this.nextId, mixed: false }; }
+  get previewing() { return !!this._pv; }
+  /** The preview's starting copy: a Snap while only scoped frames ran, else the whole as a string. */
+  baseSnap() {
+    const pv = this._pv;
+    if (pv.full !== null) return pv.full;
+    const j = this.toJSON(true);
+    j.nextId = pv.nextId;
+    return new Snap(JSON.stringify(j), [...pv.ids].map((id) => {
+      if (!pv.defs.has(id)) return [id, this.defString(this.defs.get(id))];
+      if (!pv.strs.has(id)) pv.strs.set(id, JSON.stringify(pv.defs.get(id)));
+      return [id, pv.strs.get(id)];
+    }), this);
+  }
+  get _base() {
+    const pv = this._pv;
+    if (!pv) return null;
+    if (pv.full === null) pv.full = this.baseSnap();
+    return pv.full instanceof Snap ? pv.full.s : pv.full;
+  }
+  set _base(s) { this._pv = typeof s === 'string' ? { full: s, defs: new Map(), strs: new Map(), ids: null, nextId: null, mixed: true } : null; }
+  /** Back to the preview's start: scoped (the definitions changed so far, plus `more`) or whole. */
+  revertPreview(more = []) {
+    const pv = this._pv;
+    if (pv.mixed) { this.restore(pv.full); return false; }
+    for (const id of [...this.defs.keys()]) if (!pv.ids.has(id)) this.defs.delete(id);
+    for (const id of more) {
+      if (!pv.ids.has(id) || pv.defs.has(id)) continue;
+      const d = this.defs.get(id), c = defStrs.get(d);
+      pv.defs.set(id, snapJSON(d));
+      if (!d.mesh && this.kept(d, c)) pv.strs.set(id, c.s);   // its copy as JSON is known already
+    }
+    for (const [id, j] of pv.defs) this.defs.set(id, this.defFrom(j));
+    this.nextId = pv.nextId;
+    return true;
+  }
+  preview(fn, scope = null) {
+    const pv = this._pv;
+    if (scope && !pv.mixed) this.revertPreview(scope);
+    else { if (pv.full === null) pv.full = this.baseSnap(); this.restore(pv.full); pv.mixed = true; }
+    let r = null, ok = true;
+    this._editing++;
+    try { r = fn(this); } catch (e) { ok = false; } finally { this._editing--; }
+    if (!ok) { this.revertPreview(); r = null; }
+    if (pv.mixed) this.version++; else this.bumpSafe();
     return r;
   }
   commit(label) {
-    const after = this.snapshot();
-    if (this._base !== null && after !== this._base) {
-      this.undoStack.push({ label, before: this._base, after });
-      if (this.undoStack.length > MAX_UNDO) this.undoStack.shift();
-      this.redoStack = [];
-      this.dirty = true;
+    if (this._pv) {
+      const before = this.baseSnap(), after = this.snap();
+      if (!sameSnap(after, before)) {
+        this.undoStack.push(new Step(label, before, after));
+        if (this.undoStack.length > MAX_UNDO) this.undoStack.shift();
+        this.redoStack = [];
+        this.dirty = true;
+      }
     }
-    this._base = null;
-    this.version++;
+    this._pv = null;
+    this.bumpSafe();
+    this.gcSoon();
   }
   abort() {
-    if (this._base !== null) this.restore(this._base);
-    this._base = null;
-    this.version++;
+    const safe = this._pv ? this.revertPreview() : true;
+    this._pv = null;
+    if (safe) this.bumpSafe(); else this.version++;
   }
+  /**
+   * `version` goes up on every change; `unsafeVersion` is the last version that may have changed a definition in place.
+   * A step that only swaps whole definitions for new objects (a scoped preview frame, an undo) goes up by bumpSafe(), so
+   * what was built from a definition object at or after unsafeVersion is still right while that object is in place.
+   * Code elsewhere that edits in place and sets `version++` is unsafe, as before.
+   */
+  get version() { return this._v; }
+  set version(v) { this._v = v; this.unsafeVersion = v; }
+  bumpSafe() { this._v++; }
+  /**
+   * What was made from definition object d (`e` = {v, rev}: stamp(d) when it was made) is still right: nothing has edited
+   * a definition in place unknown since (unsafeVersion), nor d itself in a scoped change (its rev).
+   */
+  kept(d, e) { return !!e && e.v >= this.unsafeVersion && e.rev === d.rev; }
+  stamp(d) { return { v: this._v, rev: d.rev }; }
+  /**
+   * Placements at animation poses (0.6 LC.10): [{path, m}] sets each placement's own matrix with no undo step and no change
+   * to `dirty`. Only the parent definitions' kept JSON is dropped, so undo snapshots stay right and every geometry built
+   * from a definition stays in use. → how many placements were found.
+   */
+  setPoses(list) {
+    let n = 0;
+    for (const { path, m } of list) {
+      if (!Array.isArray(path) || !Array.isArray(m) || m.length !== 16 || !m.every(Number.isFinite)) continue;
+      let def = this.root, inst = null, parent = null;
+      for (const iid of path) { parent = def; inst = def ? def.insts.get(iid) : null; if (!inst) break; def = this.defs.get(inst.def); }
+      if (!inst) continue;
+      inst.m = m.slice();
+      defStrs.delete(parent);
+      n++;
+    }
+    if (n) this.bumpSafe();
+    return n;
+  }
+  /** A placement by its path from the top: {inst, parent} or null (0.6 LC.10). */
+  placementAt(path) {
+    let def = this.root, inst = null, parent = null;
+    for (const iid of path || []) { parent = def; inst = def ? def.insts.get(iid) : null; if (!inst) return null; def = this.defs.get(inst.def); }
+    return inst ? { inst, parent } : null;
+  }
+  /** A definition as JSON, kept with the definition object until it may have been edited in place. */
+  defString(d) {
+    if (d.mesh) return JSON.stringify(snapJSON(d));   // a mesh: {ref, v} only (MD.1), never its data
+    if (this._editing) return JSON.stringify(defToJSON(d));
+    const c = defStrs.get(d);
+    if (this.kept(d, c)) return c.s;
+    const s = JSON.stringify(defToJSON(d));
+    defStrs.set(d, { ...this.stamp(d), s });
+    return s;
+  }
+  /** Make definitions' JSON ahead of time while `more()` (idle time left), so the next undo step is quick. → true when done. */
+  warmSnap(more) {
+    for (const d of this.defs.values()) {
+      if (d.mesh || this.kept(d, defStrs.get(d))) continue;
+      if (this._editing || this._pv || !more()) return false;
+      this.defString(d);
+    }
+    return true;
+  }
+  /** A copy of the model for undo (see Snap). */
+  snap() { return new Snap(JSON.stringify(this.toJSON(true)), [...this.defs.values()].map((d) => [d.id, this.defString(d)]), this); }
+  /**
+   * The whole model as one JSON string, made afresh (no kept copies): what a subclass that keeps its own history
+   * compares before and after an edit (CadCraft's Model3D), what Live sends, what a restore from text reads.
+   */
   snapshot() { return JSON.stringify(this.toJSON()); }
-  restore(s) { this.load(JSON.parse(s), { keepHistory: true }); }
+  /** Back to a copy (a Snap or a snapshot string). From a Snap, a definition whose JSON is unchanged keeps its object. */
+  restore(s) {
+    if (!(s instanceof Snap)) { this.load(JSON.parse(s), { keepHistory: true }); return; }
+    const defs = new Map(), made = [];
+    for (const [id, str] of s.parts) {
+      const cur = this.defs.get(id), c = cur && defStrs.get(cur);
+      if (c && c.s === str && this.kept(cur, c)) { defs.set(id, cur); continue; }
+      if (cur?.mesh && !cur.mesh.recording && this.defString(cur) === str) { defs.set(id, cur); continue; }   // the mesh is in that state
+      const d = this.defFrom(JSON.parse(str));
+      defs.set(id, d); if (!d.mesh) made.push([d, str]);
+    }
+    this.load(JSON.parse(s.head), { keepHistory: true, defs });
+    for (const [d, str] of made) defStrs.set(d, { ...this.stamp(d), s: str });
+  }
+
+  // ---- meshes (0.7 MD.1) ----
+  /** A definition from undo's JSON: a mesh's {ref, v} is found among the model's meshes and put in that state. */
+  defFrom(j) {
+    if (j && j.kind === 'mesh' && j.mesh && typeof j.mesh.ref === 'string') {
+      const mesh = this.meshes.get(j.mesh.ref);
+      if (!mesh) throw new Error(t('m3d.mesh.history_lost'));
+      try { mesh.goto(j.mesh.v); } catch (e) { throw new Error(e.code === 'busy' ? t('m3d.mesh.busy') : t('m3d.mesh.history_lost')); }
+      const d = new MeshDef(j.id, cleanText(j.name, 120) || 'Mesh', mesh);   // i18n-ignore: names are kept; a fallback only
+      d.mods = modsOf(j); d.lattice = latticeOf(j, mesh); d.curve = curveOf(j);
+      return d;
+    }
+    const d = defOf(j, (m) => { throw new Error(m); });
+    if (d.mesh) this.meshes.set(d.mesh.uid, d.mesh);
+    return d;
+  }
+  /** One part of an undo copy as portable JSON: a mesh's {ref, v} replaced by the mesh's data in that state. */
+  fullPart(str) {
+    if (!str.includes('"mesh":{"ref"')) return str;
+    const j = JSON.parse(str), mesh = this.meshes.get(j.mesh.ref);
+    if (!mesh) throw new Error(t('m3d.mesh.history_lost'));
+    const cur = mesh.v;
+    if (mesh.recording) throw new Error(t('m3d.mesh.busy'));
+    try { mesh.goto(j.mesh.v); } catch { throw new Error(t('m3d.mesh.history_lost')); }
+    const data = mesh.toJSON();
+    mesh.goto(cur);
+    return JSON.stringify({ ...j, mesh: data });
+  }
+  /** A new mesh definition holding `mesh` (not placed). */
+  newMeshDef(mesh, name) {
+    const id = 'd' + this.nextId++;
+    const d = new MeshDef(id, cleanText(name, 120) || this.uniqueName(t('m3d.mesh.name')), mesh);
+    this.defs.set(id, d);
+    this.meshes.set(mesh.uid, mesh);
+    return d;
+  }
+  /**
+   * Edit mesh definition `defId` as one undo step: fn(mesh, def) runs between mesh.begin() and mesh.end(), so the step
+   * keeps only what changed (delta undo). A throw puts the mesh back as it was. → what fn returned.
+   */
+  meshEdit(defId, label, fn) {
+    const d = this.defs.get(defId);
+    if (!d?.mesh) throw new Error(t('m3d.mesh.not_a_mesh'));
+    return this.change(label, () => {
+      const m = d.mesh;
+      m.begin();
+      let r;
+      try { r = fn(m, d); } catch (e) { m.cancel(); throw e; }
+      m.end();
+      return r;
+    }, [defId]);
+  }
+  /**
+   * A mesh edit spread over many events — a sculpt stroke (0.7 MD.7): → {dab(fn(mesh, def)), end(label), cancel()}. Each
+   * dab writes into one open record (the view redraws after each: mesh.live / liveTopo); end makes it one undo step.
+   */
+  meshStroke(defId) {
+    const d = this.defs.get(defId);
+    if (!d?.mesh) throw new Error(t('m3d.mesh.not_a_mesh'));
+    const before = this.snap(), m = d.mesh;
+    m.begin();
+    let open = true, topo = m._topoEdit;
+    const bump = () => { d.rev++; this.bumpSafe(); };
+    return {
+      dab: (fn) => {
+        if (!open) return null;
+        this._editing++;
+        try { return fn(m, d); } finally {
+          this._editing--;
+          m.live++;
+          if (m._topoEdit && !topo) { topo = true; m.liveTopo++; }
+          bump();
+        }
+      },
+      end: (label) => {
+        if (!open) return;
+        open = false;
+        m.end(); bump();
+        const after = this.snap();
+        if (!sameSnap(after, before)) {
+          this.undoStack.push(new Step(label, before, after));
+          if (this.undoStack.length > MAX_UNDO) this.undoStack.shift();
+          this.redoStack = []; this.dirty = true; this.gcSoon();
+        }
+      },
+      cancel: () => { if (!open) return; open = false; m.cancel(); bump(); },
+    };
+  }
+  /** A live preview frame of a mesh edit (inside begin()…commit/abort): like meshEdit, without an undo step of its own. */
+  meshPreview(defId, fn) {
+    return this.preview(() => {
+      const d = this.defs.get(defId);
+      if (!d?.mesh) throw new Error(t('m3d.mesh.not_a_mesh'));
+      d.mesh.begin();
+      let r;
+      try { r = fn(d.mesh, d); } catch (e) { d.mesh.cancel(); throw e; }
+      d.mesh.end();
+      return r;
+    }, [defId]);
+  }
+  /**
+   * Turn the definition placed by placement `iid` of `def` (a group or component, with what is placed inside it) into
+   * a mesh definition: every placement of it now shows the mesh. Nested placements are flattened into the mesh (their
+   * paint kept on their faces). One step of the caller's change(). → {def: new definition id, loose, dropped}.
+   */
+  toMesh(def, iid) {
+    const inst = def.insts.get(iid);
+    const src = inst && this.defs.get(inst.def);
+    if (!src || src.kind === 'root') throw new Error(t('m3d.mesh.pick_a_group'));
+    if (src.mesh) return { def: src.id, loose: 0, dropped: 0 };
+    // gather the definition and everything placed in it into one scratch definition (their own space)
+    const all = new Def('scratch', 'group', '');
+    this.walk((d, m, path, paint) => {
+      if (d.mesh) { const g = meshGeometry(d.shown); copyInto(all, g, m, paint); return; }
+      copyInto(all, d, m, paint);
+    }, src, ident());
+    const { mesh, loose, dropped } = meshFromGeometry(all);
+    const md = this.newMeshDef(mesh, src.name);
+    for (const d of this.defs.values()) for (const i of d.insts.values()) if (i.def === src.id) i.def = md.id;
+    this.purge();
+    return { def: md.id, loose, dropped };
+  }
+  /** Turn mesh definition `defId` back into push/pull geometry (a group or component as it was placed). → the new id. */
+  fromMesh(defId) {
+    const md = this.defs.get(defId);
+    if (!md?.mesh) throw new Error(t('m3d.mesh.not_a_mesh'));
+    let uses = 0;
+    for (const d of this.defs.values()) for (const i of d.insts.values()) if (i.def === defId) uses++;
+    const nd = this.newDef(uses > 1 ? 'component' : 'group', md.name);
+    geometryFromMesh(md.shown, nd);   // what shows: its modifiers applied
+    for (const d of this.defs.values()) for (const i of d.insts.values()) if (i.def === defId) i.def = nd.id;
+    this.purge();
+    return nd.id;
+  }
+  /**
+   * Let go of mesh states nothing refers to any more (0.7 MD.1): the definitions now, every undo and redo step, and an
+   * open preview. A mesh no definition or step names leaves the model's table. Run after steps are made (cheap: a scan
+   * of the steps' small mesh parts).
+   */
+  gcMeshes() {
+    if (this._pv || !this.meshes.size) return;
+    const refs = new Map();
+    const add = (uid, v) => { let s = refs.get(uid); if (!s) refs.set(uid, (s = new Set())); s.add(v); };
+    for (const d of this.defs.values()) if (d.mesh) add(d.mesh.uid, d.mesh.v);
+    const scan = (x) => {
+      const strs = x instanceof Snap ? x.parts.map((p) => p[1]) : typeof x === 'string' ? [x] : [];
+      for (const str of strs) { if (!str.includes('"mesh":{"ref"')) continue; for (const mm of str.matchAll(MESH_REF)) add(mm[1], +mm[2]); }
+    };
+    for (const st of [...this.undoStack, ...this.redoStack]) { scan(st.b); scan(st.a); }
+    for (const [uid, mesh] of this.meshes) {
+      if (mesh.recording) continue;
+      const keep = refs.get(uid);
+      if (!keep) { this.meshes.delete(uid); continue; }
+      mesh.gc(keep);
+    }
+  }
 
   // ---- instances ----
   /** Visit the root and every instance below it: cb(def, worldMatrix, path of instance ids). */
@@ -1905,7 +2669,10 @@ export class Model {
   }
   bbox(def = this.root, m = ident()) {
     let bb = null;
-    this.walk((d, wm) => { for (const p of d.verts.values()) bb = bboxAdd(bb, apply(wm, p)); }, def, m);
+    this.walk((d, wm) => {
+      if (d.mesh) { const S = d.shown, P = S.P; for (let v = 0; v < S.nv; v++) if (!S.vertDead(v)) bb = bboxAdd(bb, apply(wm, [P[v * 3], P[v * 3 + 1], P[v * 3 + 2]])); return; }
+      for (const p of d.verts.values()) bb = bboxAdd(bb, apply(wm, p));
+    }, def, m);
     return bb;
   }
   defBBox(def) { return this.bbox(def, ident()); }
@@ -1954,10 +2721,11 @@ export class Model {
     const out = [];
     if (src) {
       const m = inst.m, mirror = det3(m) < 0;
-      const vmap = new Map();
-      const cv = (v) => { if (!vmap.has(v)) vmap.set(v, vertexAt(def, apply(m, src.verts.get(v)))); return vmap.get(v); };
+      const vmap = new Map(), ix = vertexIndex(def);
+      const cv = (v) => { if (!vmap.has(v)) vmap.set(v, ix.at(apply(m, src.verts.get(v)))); return vmap.get(v); };
       const rc = curveRemapper(def);
-      for (const e of src.edges.values()) out.push({ t: 'e', id: eAdd(def, cv(e.a), cv(e.b), e.soft, rc(e.curve), e.hidden) });
+      for (const e of src.edges.values()) { const id = eAdd(def, cv(e.a), cv(e.b), e.soft, rc(e.curve), e.hidden); ix.edgeAdded(id); out.push({ t: 'e', id }); }
+      ix.stop();   // faces may add edges of their own: a corner only a face uses is found the plain way
       for (const [cid, sp] of src.splines) def.splines.set(rc(cid), { ...sp, pts: sp.pts.map((p) => apply(m, p)) });
       for (const f of src.faces.values()) {
         let loops = f.loops.map((l) => l.map(cv));
@@ -1976,6 +2744,7 @@ export class Model {
     const inst = def.insts.get(iid);
     if (!inst) return null;
     const src = this.defs.get(inst.def);
+    if (src.mesh) { const md = this.newMeshDef(src.mesh.clone(), this.uniqueName(src.name.replace(/#\d+$/, ''))); md.mods = structuredClone(src.mods); md.lattice = src.lattice && structuredClone(src.lattice); md.curve = src.curve && structuredClone(src.curve); inst.def = md.id; return md.id; }
     const nd = this.newDef(src.kind, src.kind === 'component' ? this.uniqueName(src.name.replace(/#\d+$/, '')) : undefined);
     const j = defToJSON(src);
     defFromJSON(nd, j);
@@ -2011,7 +2780,7 @@ export class Model {
    */
   copyClip(path, sel) {
     const scratch = new Model();
-    scratch.load(JSON.parse(this.snapshot()), { keepHistory: true });
+    scratch.load(JSON.parse(this.snap().s), { keepHistory: true });
     const ctx = scratch.context(path);
     if (!ctx) return null;
     const iid = scratch.makeGroup(ctx.def, sel.filter((s) => s.t !== 'g'), 'group');
@@ -2058,6 +2827,16 @@ export class Model {
     const names = new Set([...this.defs.values()].map((d) => d.name));
     for (const dj of clip.defs) {
       if (map.has(dj.id)) continue;
+      if (dj.kind === 'mesh') {
+        // a mesh comes as its data (checked like a file); in the same model it is a copy all the same
+        let mesh;
+        try { mesh = Mesh.fromJSON(dj.mesh, { isPaint }); } catch (e) { fail(t('m3d.model.a_mesh_is_wrong')); }
+        const nm = cleanText(dj.name, 120);
+        const md = this.newMeshDef(mesh, nm && !names.has(nm) ? nm : undefined);
+        md.mods = modsOf(dj); md.curve = curveOf(dj);
+        map.set(dj.id, md.id);
+        continue;
+      }
       const kind = dj.kind === 'component' ? 'component' : 'group';
       const nm = cleanText(dj.name, 120);
       map.set(dj.id, this.newDef(kind, nm && !names.has(nm) ? nm : undefined).id);
@@ -2066,7 +2845,7 @@ export class Model {
       if (!i || !ids.has(i.def)) fail(t('m3d.model.an_instance_points_at_a_missing'));
       return { ...i, def: map.get(i.def) };
     }) });
-    for (const dj of clip.defs) if (map.get(dj.id) !== dj.id) defFromJSON(this.defs.get(map.get(dj.id)), remap(dj), fail);
+    for (const dj of clip.defs) if (map.get(dj.id) !== dj.id && dj.kind !== 'mesh') defFromJSON(this.defs.get(map.get(dj.id)), remap(dj), fail);
     const tmp = this.newDef('group', 'Paste');
     defFromJSON(tmp, remap(clip.top), fail);
     const iid = this.place(ctx.def, tmp.id, mmul(ctx.inv, m));
@@ -2233,6 +3012,32 @@ export class Model {
     const [A, B, qa, qb] = dv[i] >= 0 ? [e.a, e.b, pa, pb] : [e.b, e.a, pb, pa];
     return this.resizeBetween({ path: path.slice(), v: A }, { path: path.slice(), v: B }, qa, qb, L, 'b');
   }
+  // ---- what an edit changes (Model.change's scope) ----
+  /** The definitions resizeBetween(A, B, …) edits: for each end that may move, the context of the path it shares with the other. */
+  resizeScope(A, B) {
+    const ids = new Set();
+    for (const [E, F] of [[A, B], [B, A]]) {
+      if (!E) continue;
+      let k = 0;
+      if (F) while (k < E.path.length && k < F.path.length && E.path[k] === F.path[k]) k++;
+      const ctx = this.context(F ? E.path.slice(0, k) : E.path);
+      if (ctx) ids.add(ctx.def.id);
+    }
+    return [...ids];
+  }
+  /** The definitions setDimLength(id) edits. */
+  dimScope(id) {
+    const dm = this.dims.get(id);
+    if (!dm) return [];
+    if (dm.kind === 'rad' || dm.kind === 'dia') { const c = this.context(dm.c.path); return c ? [c.def.id] : []; }
+    return this.resizeScope(dm.a.path ? dm.a : null, dm.b.path ? dm.b : null);
+  }
+  /** The definitions holding placements tagged `name` (renameTag, deleteTag), or anything hidden (unhideAll: null). */
+  holding(name) {
+    return [...this.defs.values()].filter((d) => (name === null
+      ? [d.edges, d.faces, d.insts].some((map) => [...map.values()].some((o) => o.hidden))
+      : [...d.insts.values()].some((i) => i.tag === name))).map((d) => d.id);
+  }
   /** A group's or component's size along its own red (0), green (1) or blue (2) axis: its far side moves. */
   setDefSize(defId, axis, size) {
     const def = this.defs.get(defId), bb = def && this.bbox(def);
@@ -2245,10 +3050,11 @@ export class Model {
   }
 
   // ---- files ----
-  toJSON() {
+  /** The model in its file form; `noDefs`: defs: 0 in place of the definitions (Snap's head). */
+  toJSON(noDefs = false) {
     return {
-      format: FORMAT, version: VERSION, units: this.units, nextId: this.nextId,
-      defs: [...this.defs.values()].map(defToJSON),
+      format: FORMAT, version: [...this.defs.values()].some((d) => d.mesh) ? MESH_FILE_VERSION : 1, units: this.units, nextId: this.nextId,
+      defs: noDefs ? 0 : [...this.defs.values()].map(defToJSON),
       guides: [...this.guides].map(([id, g]) => ({ id, ...g })),
       ...(this.lights.size ? { lights: [...this.lights].map(([id, L]) => ({ id, ...structuredLight(L) })) } : {}),
       ...(this.sections.size ? { sections: [...this.sections].map(([id, s]) => ({ id, p: s.p.slice(), n: s.n.slice(), name: s.name })), activeSection: this.activeSection } : {}),
@@ -2270,19 +3076,18 @@ export class Model {
     };
   }
   /** Load a parsed native file (untrusted unless it is our own snapshot). Throws a plain Error. */
-  load(j, { keepHistory = false } = {}) {
+  /** Open a model from its file form. `defs` (restore from a Snap): the definitions already made, j.defs left out. */
+  load(j, { keepHistory = false, defs: made = null } = {}) {
     const fail = (m) => { throw new Error(t('m3d.model.file_bad', { why: m })); };
     if (!j || typeof j !== 'object' || j.format !== FORMAT) fail(t('m3d.model.the_format_mark_is_missing'));
     if (!Number.isInteger(j.version) || j.version < 1) fail(t('m3d.model.the_version_is_missing'));
     if (j.version > VERSION) throw new Error(t('m3d.model.file_newer', { v: j.version }));
-    if (!Array.isArray(j.defs) || !j.defs.length) fail(t('m3d.model.it_has_no_model'));
-    const defs = new Map();
-    for (const dj of j.defs.slice(0, 100000)) {
+    if (!made && (!Array.isArray(j.defs) || !j.defs.length)) fail(t('m3d.model.it_has_no_model'));
+    const defs = made || new Map();
+    for (const dj of made ? [] : j.defs.slice(0, 100000)) {
       if (!dj || typeof dj.id !== 'string' || !/^(root|d\d{1,9})$/.test(dj.id)) fail(t('m3d.model.a_definition_id_is_wrong'));
       if (defs.has(dj.id)) fail(t('m3d.model.a_definition_appears_twice'));
-      const kind = dj.id === 'root' ? 'root' : dj.kind === 'component' ? 'component' : 'group';
-      const d = new Def(dj.id, kind, cleanText(dj.name, 120) || (kind === 'root' ? 'Model' : kind === 'component' ? 'Component' : 'Group'));
-      defFromJSON(d, dj, fail);
+      const d = defOf(dj, fail);
       defs.set(d.id, d);
     }
     if (!defs.has('root')) fail(t('m3d.model.it_has_no_root'));
@@ -2355,6 +3160,8 @@ export class Model {
       const a = j.axes, X = [a[0], a[1], a[2]], Y = [a[4], a[5], a[6]], Z = [a[8], a[9], a[10]];
       if ([X, Y, Z].every((v) => Math.abs(len(v) - 1) < 1e-6) && Math.abs(dot(X, Y)) < 1e-6 && dot(cross(X, Y), Z) > 0.999) this.axesM = a.slice();
     }
+    if (!keepHistory) this.meshes = new Map();
+    for (const d of defs.values()) if (d.mesh) this.meshes.set(d.mesh.uid, d.mesh);
     this.defs = defs;
     this.guides = guides;
     this.lights = lights;
@@ -2369,11 +3176,11 @@ export class Model {
     this.units = UNIT_KEYS.includes(j.units) ? j.units : 'ft-in';
     this.nextId = Math.max(Number.isInteger(j.nextId) ? j.nextId : 1, maxId + 1);
     if (!keepHistory) { this.undoStack = []; this.redoStack = []; this.dirty = false; this._base = null; this.uid = newUid(); }
-    this.version++;
+    if (made) this.bumpSafe(); else this.version++;   // given definitions are new objects or untouched ones
   }
 }
 
-export const UNIT_KEYS = ['ft-in', 'in', 'm', 'cm', 'mm'];
+export const UNIT_KEYS = ['ft-in', 'in', 'ft', 'yd', 'mi', 'mil', 'm', 'cm', 'mm', 'um', 'km'];
 let uidN = 0;
 const newUid = () => Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10) + '-' + (uidN++);
 export const STYLE_MODES = ['shaded', 'hidden', 'wire', 'xray'];
@@ -2432,6 +3239,8 @@ export function cleanScene(s) {
   }
   return {
     ...(vis ? { vis } : {}),
+    // a locked camera (0.6 DC.64): Update keeps it; only written when set, so unlocked scenes save as before
+    ...(s.lock === true ? { lock: true } : {}),
     name: cleanText(s.name, 80) || 'Scene',  // i18n-ignore: a fallback name only for a broken file
     cam: { eye: c.eye.slice(), target: c.target.slice(), fov: num(c.fov, 10, 120, 35), persp: c.persp !== false, height: num(c.height, 1e-6, 1e7, 10) },
     style: {
@@ -2451,6 +3260,7 @@ export function copyOwnGeometry(src, dst) {
   defFromJSON(dst, { ...defToJSON(src), insts: [] });
 }
 function defToJSON(d) {
+  if (d.mesh) return { ...meshHead(d), mesh: d.mesh.toJSON() };
   return {
     id: d.id, kind: d.kind, name: d.name, next: d.next, ...(d.starter ? { starter: d.starter } : {}), ...(d.dyn ? { dyn: { src: d.dyn.src, size: d.dyn.size.slice() } } : {}),
     verts: [...d.verts].map(([id, p]) => [id, p[0], p[1], p[2]]),
@@ -2460,8 +3270,53 @@ function defToJSON(d) {
     ...(d.splines.size ? { splines: [...d.splines].map(([id, sp]) => ({ id, pts: sp.pts, closed: !!sp.closed, segs: sp.segs })) } : {}),
   };
 }
+/** A mesh definition's JSON without its mesh (the shape older readers expect: no geometry of its own, no placements). */
+function meshHead(d) {
+  return { id: d.id, kind: 'mesh', name: d.name, next: 1, verts: [], edges: [], faces: [], insts: [], ...(d.mods?.length ? { mods: d.mods } : {}), ...(d.lattice ? { lattice: d.lattice } : {}), ...(d.curve ? { curve: d.curve } : {}) };
+}
+/** A definition as undo keeps it: a mesh only as {ref: its uid, v: its state} (MD.1 delta undo); the rest as defToJSON. */
+function snapJSON(d) { return d.mesh ? { ...meshHead(d), mesh: { ref: d.mesh.uid, v: d.mesh.v } } : defToJSON(d); }
+const MESH_REF = /"mesh":\{"ref":"([a-z0-9]{1,40})","v":(\d{1,15})\}/g;
+/** Each definition object's JSON, with the version it was made at (Model.defString). */
+const defStrs = new WeakMap();
+/**
+ * A copy of the model for undo: `head` the model's JSON with defs: 0, `parts` [[id, JSON]] for each definition. A
+ * definition's JSON is the same string from copy to copy while it is unchanged, so a step holds only what it changed;
+ * `s` is the whole model as one JSON string (the snapshot), made when asked.
+ */
+class Snap {
+  constructor(head, parts, model = null) { this.head = head; this.parts = parts; this.model = model; }
+  // the whole string is portable (Live sends it, a restore from text reads it): a mesh's {ref, v} becomes its data then
+  get s() { return this.head.replace('"defs":0', '"defs":[' + this.parts.map((p) => (this.model ? this.model.fullPart(p[1]) : p[1])).join(',') + ']'); }
+}
+const sameSnap = (x, y) => (x instanceof Snap && y instanceof Snap
+  ? x.head === y.head && x.parts.length === y.parts.length && x.parts.every((p, i) => p[0] === y.parts[i][0] && p[1] === y.parts[i][1])
+  : (x instanceof Snap ? x.s : x) === (y instanceof Snap ? y.s : y));
+/** An undo step: `before` and `after` are snapshot strings (live.js sends them), kept as Snaps (`b`, `a`). */
+class Step {
+  constructor(label, b, a) { this.label = label; this.b = b; this.a = a; }
+  get before() { return this.b instanceof Snap ? this.b.s : this.b; }
+  set before(v) { this.b = v; }
+  get after() { return this.a instanceof Snap ? this.a.s : this.a; }
+  set after(v) { this.a = v; }
+}
+/** A new definition from its file form. */
+function defOf(dj, fail) {
+  if (dj.kind === 'mesh' && dj.id !== 'root') {
+    // a mesh in its file form (an undo copy's {ref, v} is resolved by the model before it gets here)
+    let mesh;
+    try { mesh = Mesh.fromJSON(dj.mesh, { isPaint }); } catch (e) { fail(t('m3d.model.a_mesh_is_wrong')); }
+    const d = new MeshDef(dj.id, cleanText(dj.name, 120) || 'Mesh', mesh);   // i18n-ignore: a fallback name only for a broken file
+    d.mods = modsOf(dj); d.lattice = latticeOf(dj, mesh); d.curve = curveOf(dj);
+    return d;
+  }
+  const kind = dj.id === 'root' ? 'root' : dj.kind === 'component' ? 'component' : 'group';
+  const d = new Def(dj.id, kind, cleanText(dj.name, 120) || (kind === 'root' ? 'Model' : kind === 'component' ? 'Component' : 'Group'));
+  defFromJSON(d, dj, fail);
+  return d;
+}
 function defFromJSON(d, j, fail = (m) => { throw new Error(m); }) {
-  if (typeof j.starter === 'string' && /^[a-z0-9_]{1,32}$/.test(j.starter)) d.starter = j.starter;   // 0.4 M25: which starter thing it is
+  if (typeof j.starter === 'string' && /^[a-z0-9_-]{1,40}$/.test(j.starter)) d.starter = j.starter;   // 0.4 M25: which starter thing it is (entourage ids have hyphens: ent-tree-…)
   // 0.4 M26: a stretched copy remembers its original and size
   if (j.dyn && typeof j.dyn.src === 'string' && /^d\d{1,9}$/.test(j.dyn.src) && Array.isArray(j.dyn.size) && j.dyn.size.length === 3 && j.dyn.size.every((x) => Number.isFinite(x) && x >= 0)) d.dyn = { src: j.dyn.src, size: j.dyn.size.slice() };
   const intId = (x) => Number.isInteger(x) && x > 0 && x < 1e9;

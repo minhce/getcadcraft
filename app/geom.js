@@ -12,6 +12,8 @@
 import { dimGeometry } from './dims.js';
 import { leaderGeometry, leaderStyle } from './leader.js';
 import { advance } from './font.js';
+import { richOf, heightFactor } from './mtext.js';
+import { points as splinePoints, valid as splineValid, editFit as splineEditFit, moveCtrl as splineMoveCtrl, polyline as splinePolyline } from './spline.js';
 
 export const TAU = Math.PI * 2;
 export const EPS = 1e-9;
@@ -123,6 +125,7 @@ export function prims(e, blocks = null, depth = 0) {
     case 'arc': { const [a0, a1] = arcRange(e.a0, e.a1); return [{ k: 'A', cx: e.cx, cy: e.cy, r: e.r, a0, a1 }]; }
     case 'poly': return polyPrims(e);
     case 'ellipse': return ellipsePrims(e);
+    case 'spline': return splinePrims(e);
     case 'point': return [];
     case 'text': { const c = textCorners(e); return c.map((p, i) => ({ k: 'L', x1: p.x, y1: p.y, x2: c[(i + 1) % 4].x, y2: c[(i + 1) % 4].y, box: true })); }
     case 'hatch': return e.loops.flatMap((l) => ringPrims(l));
@@ -176,6 +179,24 @@ export function viewportMatrix(vp) {
   return [c, n, -n, c, vp.x - (c * vp.cx - n * vp.cy), vp.y - (n * vp.cx + c * vp.cy)];
 }
 
+/**
+ * A VIEWPORT's view centre is in display coordinates (DCS: the model turned by the twist, about the view target), not in the
+ * model's (DXF reference, group 12; ezdxf turns it back the same way). CAD-TWIST-SAVE 2026-10-24: CadCraft wrote and read
+ * the model point as is, so a twisted viewport came back right only in CadCraft — BimCraft, AutoCAD and ezdxf showed another
+ * area. `vpModelCentre`: the stored centre (+ target) → the model point at the viewport's centre; `vpDcsCentre`: the reverse.
+ */
+export function vpModelCentre(dc, t, tw) {
+  const dx = Number(dc?.x) || 0, dy = Number(dc?.y) || 0, tx = Number(t?.x) || 0, ty = Number(t?.y) || 0;
+  if (!tw) return { x: tx + dx, y: ty + dy };
+  const c = Math.cos(tw), s = Math.sin(tw);
+  return { x: tx + c * dx + s * dy, y: ty - s * dx + c * dy };
+}
+export function vpDcsCentre(cx, cy, tw) {
+  if (!tw) return { x: cx, y: cy };
+  const c = Math.cos(tw), s = Math.sin(tw);
+  return { x: c * cx - s * cy, y: s * cx + c * cy };
+}
+
 /** Corners of a viewport (paper units), counter-clockwise from the lower left. */
 export function viewportCorners(e) {
   const hw = e.w / 2, hh = e.h / 2;
@@ -216,6 +237,13 @@ export function ellipsePoints(e, steps = ELLIPSE_STEPS) {
   }
   return pts;
 }
+/** A spline as short segments along the curve (spline.js: within 0.02 % of its size of the true curve). */
+function splinePrims(e) {
+  if (!splineValid(e)) return [];
+  const p = splinePoints(e), out = [];
+  for (let i = 0; i + 1 < p.length; i++) out.push({ k: 'L', x1: p[i].x, y1: p[i].y, x2: p[i + 1].x, y2: p[i + 1].y });
+  return out;
+}
 function ellipsePrims(e) {
   const p = ellipsePoints(e), out = [];
   for (let i = 0; i + 1 < p.length; i++) out.push({ k: 'L', x1: p[i].x, y1: p[i].y, x2: p[i + 1].x, y2: p[i + 1].y });
@@ -242,15 +270,51 @@ export function textLayout(e) {
   if (lay) return lay;
   let lines = String(e.s).split('\n');
   if (e.ww > 0) lines = lines.flatMap((l) => wrapLine(l, e));
-  const widths = lines.map((l) => textWidth(l, e));
+  const rich = richOf(e);   // inline format codes kept (mtext.js): each line also comes as styled runs
+  const runs = rich ? richRuns(lines, e, rich) : null;
+  const widths = runs ? runs.map((rs) => rs.reduce((a, r) => a + r.w, 0)) : lines.map((l) => textWidth(l, e));
   const w = Math.max(...widths, e.h * 0.4);
   const ls = LINE_SPACING * (e.ls || 1);
   const h = e.h * (1 + (lines.length - 1) * ls);
   const x = e.ha === 'center' ? -w / 2 : e.ha === 'right' ? -w : 0;
   const top = e.va === 'top' ? 0 : e.va === 'middle' ? h / 2 : e.va === 'bottom' ? h : e.h;
-  lay = { lines, widths, box: { x, y: top - h, w, h }, baselines: lines.map((_, k) => top - e.h - k * e.h * ls) };
+  lay = { lines, widths, box: { x, y: top - h, w, h }, baselines: lines.map((_, k) => top - e.h - k * e.h * ls), ...(runs ? { runs } : {}) };
   if (e && typeof e === 'object') layouts.set(e, lay);
   return lay;
+}
+
+/** A stacked fraction is set at this fraction of the text height, as the other programs set it by default. */
+export const STACK_SCALE = 0.7;
+/**
+ * The lines of a text with inline format codes as runs: [[{ text, st, x, w, hf, stack? }]] — x the run's start from the line's
+ * left edge, w its advance (both in drawing units), hf the height factor (\H), stack { num, den } for a fraction. Each line is
+ * a piece of the plain text in order (wrapping only drops the blanks it breaks at), so a character's style is its place.
+ */
+function richRuns(lines, e, rich) {
+  const own = [];   // plain character → the segment it belongs to
+  rich.segs.forEach((g, gi) => { for (let k = 0; k < g.text.length; k++) own.push(gi); });
+  const s = String(e.s), em = e.h * FONT_EM * (e.wf || 1);
+  let pos = 0;
+  return lines.map((line) => {
+    const i0 = line ? Math.max(pos, s.indexOf(line, pos)) : pos;
+    if (line) pos = i0 + line.length;
+    const rs = [];
+    let x = 0;
+    for (let k = 0; k < line.length;) {
+      const gi = own[i0 + k], g = rich.segs[gi];
+      let n = 1;
+      while (k + n < line.length && own[i0 + k + n] === gi) n++;
+      const text = line.slice(k, k + n);
+      const hf = heightFactor(g?.st, e.h), wfac = g?.st?.w || 1;
+      let r;
+      if (g?.stack && n === g.text.length) {
+        const sw = STACK_SCALE * hf * Math.max(advance(g.stack.num), advance(g.stack.den)) / 1000 * em;
+        r = { text, st: g.st, x, w: sw, hf, stack: { num: g.stack.num, den: g.stack.den, sep: g.stack.sep } };
+      } else r = { text, st: g?.st, x, w: advance(text) / 1000 * em * hf * wfac, hf };
+      rs.push(r); x += r.w; k += n;
+    }
+    return rs;
+  });
 }
 
 /** Break one line into lines no wider than the text's wrap width (a word longer than that keeps its own line). */
@@ -283,6 +347,17 @@ export function mInverse(m) {
   return [e / d, -b / d, -c / d, a / d, (c * g - e * f) / d, (b * f - a * g) / d];
 }
 
+/**
+ * Is a block's j-th attribute definition hidden by the visibility state the block shows? A dynamic block (dyn-blocks.js)
+ * keeps each file object's shown flag in `dyn.shown`, and `dyn.ad` names the file object each attribute definition is.
+ */
+export function attdefHidden(blk, j) {
+  const d = blk && blk.dyn;
+  if (!d || !Array.isArray(d.ad) || !Array.isArray(d.shown)) return false;
+  const i = d.ad[j];
+  return Number.isInteger(i) && d.shown[i] === false;
+}
+
 /** An attribute tag as CAD programs keep it: upper case, no spaces. */
 export const normTag = (t) => String(t ?? '').trim().toUpperCase().replace(/\s+/g, '_').slice(0, 255);
 
@@ -294,24 +369,27 @@ export const normTag = (t) => String(t ?? '').trim().toUpperCase().replace(/\s+/
  *   insert.attloc { TAG: { x, y, h, rot, ha, va, wf, invisible, layer, color } }  (an attribute placed
  *                 off its definition, e.g. moved in another program; also tags the block does not define)
  * A constant definition draws its default; a variable one draws the reference's value, if it has one.
- * Invisible attributes and empty values are left out unless `all`.
+ * Invisible attributes and empty values are left out unless `all`. So are the attributes a dynamic block's visibility state
+ * hides (attdefHidden; 0.6.1 FIX-061-DYN-ATTRS): their values stay on the reference, and with `all` they come out marked
+ * `hidden` (writers flag them invisible) — switching back to a state that shows them shows their values again.
  */
 export function attrTexts(e, blk, all = false) {
   const out = [];
   if (!e.attrs && !blk?.attdefs?.length) return out;
   const vals = e.attrs || {};
   const has = (t) => Object.prototype.hasOwnProperty.call(vals, t);
-  const make = (tag, value, d) => {
+  const make = (tag, value, d, hidden = false) => {
     const s = String(value ?? '');
-    if (!d || (!all && (d.invisible || !s.trim()))) return;
-    out.push({ type: 'text', layer: d.layer ?? '0', color: d.color ?? null, x: +d.x || 0, y: +d.y || 0, h: d.h > 0 ? d.h : 2.5, rot: d.rot || 0, ha: d.ha || 'left', va: d.va || 'baseline', wf: d.wf || 1, s, tag, ...(d.invisible ? { invisible: true } : {}) });
+    if (!d || (!all && (d.invisible || hidden || !s.trim()))) return;
+    out.push({ type: 'text', layer: d.layer ?? '0', color: d.color ?? null, x: +d.x || 0, y: +d.y || 0, h: d.h > 0 ? d.h : 2.5, rot: d.rot || 0, ha: d.ha || 'left', va: d.va || 'baseline', wf: d.wf || 1, s, tag, ...(d.invisible ? { invisible: true } : {}), ...(hidden ? { hidden: true } : {}) });
   };
   const seen = new Set();
-  for (const d of blk?.attdefs || []) {
+  (blk?.attdefs || []).forEach((d, j) => {
     seen.add(d.tag);
-    if (d.constant) make(d.tag, d.def, d);
-    else if (has(d.tag)) make(d.tag, vals[d.tag], e.attloc?.[d.tag] || d);
-  }
+    const hidden = attdefHidden(blk, j);
+    if (d.constant) make(d.tag, d.def, d, hidden);
+    else if (has(d.tag)) make(d.tag, vals[d.tag], e.attloc?.[d.tag] || d, hidden);
+  });
   for (const tag of Object.keys(vals)) if (!seen.has(tag) && e.attloc?.[tag]) make(tag, vals[tag], e.attloc[tag]);
   return out;
 }
@@ -619,6 +697,14 @@ export function txEntity(e, m) {
       if (sim.flip && t1 - t0 < TAU - EPS) [t0, t1] = [TAU - t1, TAU - t0];
       return { ...e, cx: c.x, cy: c.y, mx: a.x - c.x, my: a.y - c.y, t0, t1 };
     }
+    case 'spline': {
+      const Q = (p) => P(p.x, p.y);
+      const dir = (d) => (d ? { x: m[0] * d.x + m[2] * d.y, y: m[1] * d.x + m[3] * d.y } : d);   // a direction: the matrix without its move
+      const out = { ...e, ctrl: e.ctrl.map(Q), ...(e.fit ? { fit: e.fit.map(Q) } : {}) };
+      if (e.st) out.st = dir(e.st);
+      if (e.et) out.et = dir(e.et);
+      return out;
+    }
     case 'text': {
       const a = P(e.x, e.y);
       let rot = (e.rot || 0) + sim.rot;
@@ -676,6 +762,7 @@ export function grips(e) {
     case 'arc': return [{ x: e.cx, y: e.cy, key: 'c' }, { ...polar({ x: e.cx, y: e.cy }, e.a0, e.r), key: 'a0' }, { ...polar({ x: e.cx, y: e.cy }, e.a1, e.r), key: 'a1' }];
     case 'poly': return e.pts.map((p, i) => ({ x: p.x, y: p.y, key: 'v' + i }));
     case 'ellipse': return [{ x: e.cx, y: e.cy, key: 'c' }];
+    case 'spline': return e.fit ? e.fit.map((p, i) => ({ x: p.x, y: p.y, key: 'f' + i })) : e.ctrl.slice(0, e.periodic ? e.ctrl.length - e.degree : e.ctrl.length).map((p, i) => ({ x: p.x, y: p.y, key: 'c' + i }));
     case 'text': case 'point': case 'insert': case 'xline': case 'ray': return [{ x: e.x, y: e.y, key: 'p' }];
     case 'dim': return ['p1', 'p2', 'c', 'loc'].filter((k) => e[k] && !(k === 'p2' && (e.kind === 'radius' || e.kind === 'diameter'))).map((k) => ({ x: e[k].x, y: e[k].y, key: k }));
     case 'viewport': return [{ x: e.x, y: e.y, key: 'c' }, ...viewportCorners(e).map((p, i) => ({ ...p, key: 'k' + i }))];
@@ -697,6 +784,7 @@ export function gripMove(e, key, to) {
       return { ...e, [key]: normAngle(Math.atan2(to.y - e.cy, to.x - e.cx)) };
     case 'poly': { const i = +key.slice(1); return { ...e, pts: e.pts.map((p, j) => (j === i ? { ...p, x: to.x, y: to.y } : p)) }; }
     case 'ellipse': return { ...e, cx: to.x, cy: to.y };
+    case 'spline': return key[0] === 'f' ? splineEditFit(e, +key.slice(1), to) : splineMoveCtrl(e, +key.slice(1), to);
     case 'text': case 'point': case 'insert': case 'xline': case 'ray': return { ...e, x: to.x, y: to.y };
     case 'dim': {
       const out = { ...e };
@@ -1102,6 +1190,7 @@ export function filletLines(a, b, r, pickA, pickB) {
 export function pathOf(e) {
   if (e.type === 'circle') { const n = 96, pts = []; for (let i = 0; i < n; i++) pts.push(polar({ x: e.cx, y: e.cy }, (i / n) * TAU, e.r)); return { pts, closed: true }; }
   if (e.type === 'ellipse') { const pts = ellipsePoints(e, 144); const closed = e.t1 - e.t0 >= TAU - 1e-9; if (closed) pts.pop(); return { pts, closed }; }
+  if (e.type === 'spline' && splineValid(e)) { const pts = splinePolyline(e, 24); return { pts, closed: !!e.closed }; }
   if (e.type === 'line') return { pts: [{ x: e.x1, y: e.y1 }, { x: e.x2, y: e.y2 }], closed: false };
   if (e.type === 'arc') { const p = prims(e)[0], n = Math.max(8, Math.ceil((p.a1 - p.a0) / (TAU / 96))), pts = []; for (let i = 0; i <= n; i++) pts.push(primPoint(p, i / n)); return { pts, closed: false }; }
   if (e.type === 'poly' && e.pts.length >= 2) {
@@ -1202,6 +1291,7 @@ export function curveLength(e) {
   if (e.type === 'line') return Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
   if (e.type === 'arc') return e.r * (normAngle(e.a1 - e.a0) || TAU);
   if (e.type === 'poly') return polyPrims(e).reduce((s, p) => s + primLength(p), 0);
+  if (e.type === 'spline') return prims(e).reduce((s, p) => s + primLength(p), 0);
   return null;
 }
 
@@ -1853,6 +1943,11 @@ export function explodeEntity(e, blocks) {
     return polyPrims(e).map((p) => (p.k === 'L'
       ? { type: 'line', layer: e.layer, color: e.color ?? null, x1: p.x1, y1: p.y1, x2: p.x2, y2: p.y2 }
       : { type: 'arc', layer: e.layer, color: e.color ?? null, cx: p.cx, cy: p.cy, r: p.r, a0: normAngle(p.a0), a1: normAngle(p.a1) }));
+  }
+  if (e.type === 'spline') {   // a polyline along the curve (precision 10 per knot span)
+    if (!splineValid(e)) return null;
+    const pts = splinePolyline(e, 10);
+    return pts.length >= 2 ? [{ type: 'poly', layer: e.layer, color: e.color ?? null, closed: !!e.closed, pts: pts.map((q) => ({ x: q.x, y: q.y, b: 0 })) }] : null;
   }
   if (e.type === 'mleader') return leaderGeometry(e).map((c) => ({ ...c, layer: e.layer, color: e.color ?? null }));
   if (e.type === 'insert' || e.type === 'dim') {

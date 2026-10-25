@@ -8,22 +8,34 @@
  *   displayList(doc, sheet, { mono, style })      what to draw, in millimetres on the sheet; `style` = a plot style table
  *                                                 (plotstyle.js: each colour's pen sets the printed colour and lineweight),
  *                                                 else `mono` picks the built-in 'monochrome' (default) or 'colour'
- *   await toPdf(list, { pen, title })             → { bytes: Uint8Array, report }
+ *   await toPdf(list, { pen, title, font })       → { bytes: Uint8Array, report }   (font: false = Helvetica only)
+ *   setPdfFont(bytes | async () => bytes | null)  where the embedded font comes from (default: the app's vendor folder)
  *   drawPreview(ctx, list, { pxPerMm, pen })      the same on a canvas
+ *   toSvg(list, { pen, title, font })             → { text, report }   the same as an SVG document (0.7 D7.20)
+ *   await toPngBlob(list, { dpi, pen, font })     → { blob, w, h, dpi, capped }   the same as a PNG (browser; pngSize() is the size rule)
  *
  * A sheet is { w, h (mm), views: [{ clip: [{x,y}…] | null, m: entity → mm, entities, frozen? (layer names, VP.1) }] }.
- * Lines are true vectors (arcs as Béziers), fills keep their holes (even-odd), text is
- * Helvetica (one of the 14 fonts every PDF reader has), so nothing is embedded. Helvetica's
- * Windows-1252 set covers Western European text; other characters print as "?" and the
- * report says how many. Layers set not to plot are left out; viewport frames follow their layer.
+ * Lines are true vectors (arcs as Béziers), fills keep their holes (even-odd). Text is Helvetica (one of the 14 fonts
+ * every PDF reader has, nothing embedded) while every text fits Windows-1252 (Western European). When one does not —
+ * Polish, Czech, Cyrillic, Greek … — the PDF embeds Liberation Sans (pdf-font.js; Helvetica's widths, SIL OFL 1.1),
+ * subset to the letters used, with a ToUnicode map so the text stays selectable and searchable (0.6.1 FIX-061-PDF-CHARS).
+ * Characters that font has no letter for print as "?" and the report says how many (`missing`; `font` names the font).
+ * Layers set not to plot are left out; viewport frames follow their layer.
  */
 
 import { walk, frozenSet } from './walk.js';
 import { findPicture, pdfImage } from './pictures.js';
+import { findPdf, pdfRefs, pdfFrame } from './pdfmodel.js';
+import { peekVector, preparePdfs } from './pdfhost.js';
+import { emitPdf } from './pdf-emit.js';
 import { textLayout, textCorners, viewportCorners, viewportMatrix, mMul, mApply, FONT_EM, emptyBounds, growPt, validBounds, primBounds, clipInfinite } from './geom.js';
 import { UNIT_MM, makePaper, sOf, nOf, scaleLabel } from './sheets.js';
-import { CP1252, SUBST, charAdvance } from './font.js';
-import { applyPen, builtinTable } from './plotstyle.js';
+import { fillRichLine, runColor } from './mtext-draw.js';
+import { STACK_SCALE } from './geom.js';
+import { CP1252, SUBST, charAdvance, advance } from './font.js';
+import { applyPen, builtinTable, penStyleOf } from './plotstyle.js';
+import { hatchLines } from './hatch.js';
+import { readTtf, FontUse, fontObjects, missingGlyphs } from './pdf-font.js';
 
 export const PEN_WIDTHS = [0.13, 0.18, 0.25, 0.35, 0.5, 0.7];
 const MARGIN = 5;   // mm round a model plot (most printers cannot print to the edge)
@@ -64,6 +76,10 @@ export function modelSheet(doc, { area, paper = 'iso-a3', portrait = false, n = 
 }
 
 // ---------------------------------------------------------------------------
+const CAP_CODE = { butt: 0, round: 1, square: 2 }, JOIN_CODE = { miter: 0, round: 1, bevel: 2 };
+/** A pen's fill style → [hatch pattern, angle (radians), scale] (hatch.js patterns; metric spacing) */
+const FILL_PATTERN = { horizontal: ['LINE', 0, 0.5], vertical: ['LINE', Math.PI / 2, 0.5], 'slant-right': ['ANSI31', 0, 0.5], 'slant-left': ['ANSI31', Math.PI / 2, 0.5], crosshatch: ['NET', 0, 0.5], diamonds: ['NET', Math.PI / 4, 0.5], dots: ['DOTS', 0, 1] };
+
 // Display list: per view, fills, then strokes grouped by colour, then points and text
 
 export function displayList(doc, sheet, { mono = true, style } = {}) {
@@ -80,17 +96,22 @@ export function displayList(doc, sheet, { mono = true, style } = {}) {
       : sheet.w > 0 && sheet.h > 0 ? { minX: 0, minY: 0, maxX: sheet.w, maxY: sheet.h } : null;
     // walk.js's 4th argument (track P): alpha = transparency, wipe = a fill in the paper's colour (white)
     const alphaOf = (o) => (o && Number.isFinite(o.alpha) ? Math.max(0, Math.min(1, o.alpha)) : 1);
-    const strokeList = (color, lw, a) => { const k = color + '|' + (lw >= 0 ? lw : -3) + '|' + a; let l = strokes.get(k); if (!l) strokes.set(k, (l = [])); return l; };
+    const strokeList = (color, lw, a, cap = null, join = null) => { const k = color + '|' + (lw >= 0 ? lw : -3) + '|' + a + '|' + (cap || '') + '|' + (join || ''); let l = strokes.get(k); if (!l) strokes.set(k, (l = [])); return l; };
     walk(doc, v.entities, {
       // grouped by colour, lineweight (0.4 C8: mm on paper, -3 = the plot's pen width) and alpha
-      stroke(color, ps, lw = -3, o) { const p = pen(color, lw); strokeList(p.color, p.lw, alphaOf(o)).push(...ps); },
+      stroke(color, ps, lw = -3, o) { const p = pen(color, lw); strokeList(p.color, p.lw, alphaOf(o), p.cap, p.join).push(...ps); },
       fill(color, loops, solid, o) {
         const a = alphaOf(o);
-        if (solid) fills.push({ color: o?.wipe ? '#ffffff' : ink(color), loops, alpha: o?.wipe ? 1 : a });
+        const fs = !o?.wipe && solid ? penStyleOf(table, color).fill : null;   // a pen's fill style (0.7 DC.14): hatch lines instead of ink
+        if (fs) {
+          const p = pen(color), l2 = strokeList(p.color, p.lw >= 0 && p.lw < 0.3 ? p.lw : 0.13, a, p.cap, p.join);
+          const [name, pang, psc] = FILL_PATTERN[fs];
+          for (const q of hatchLines({ type: 'hatch', loops, pattern: name, pangle: pang, pscale: psc, piso: true }, null) || []) l2.push(q);
+        } else if (solid) fills.push({ color: o?.wipe ? '#ffffff' : ink(color), loops, alpha: o?.wipe ? 1 : a });
         else {   // a patterned hatch plots as a light tone of its colour, with its outline
           fills.push({ color: mix(ink(color), '#ffffff', 0.82), loops, alpha: a });
           const p = pen(color);
-          const l2 = strokeList(p.color, p.lw, a);
+          const l2 = strokeList(p.color, p.lw, a, p.cap, p.join);
           for (const l of loops) for (let i = 0; i + 3 < l.length; i += 2) l2.push({ k: 'L', x1: l[i], y1: l[i + 1], x2: l[i + 2], y2: l[i + 3] });
         }
       },
@@ -101,14 +122,35 @@ export function displayList(doc, sheet, { mono = true, style } = {}) {
       infinite(color, e, lw = -3, o) {
         const tt = area && clipInfinite({ x: e.x, y: e.y }, { x: e.dx, y: e.dy }, area, e.type === 'ray');
         const p = pen(color, lw);
-        if (tt && tt[1] > tt[0]) strokeList(p.color, p.lw, alphaOf(o)).push({ k: 'L', x1: e.x + e.dx * tt[0], y1: e.y + e.dy * tt[0], x2: e.x + e.dx * tt[1], y2: e.y + e.dy * tt[1] });
+        if (tt && tt[1] > tt[0]) strokeList(p.color, p.lw, alphaOf(o), p.cap, p.join).push({ k: 'L', x1: e.x + e.dx * tt[0], y1: e.y + e.dy * tt[0], x2: e.x + e.dx * tt[1], y2: e.y + e.dy * tt[1] });
       },
       picture(p) { const rec = findPicture(doc, p.file); if (rec) { pictures.push(p); files.set(p.file, rec); } },   // 0.5 WL.13/14: only pictures whose file CadCraft has
-    }, { m: v.m, plot: true, frozen: v.frozen || null });
-    return { clip: v.clip, pictures, fills, masks, strokes: [...strokes].map(([k, prims]) => { const [color, lw, a] = k.split('|'); return { color, lw: +lw, alpha: +a, prims }; }), points, texts };
+      // a PDF underlay (0.7 D7.24) prints as the vectors and text of its page (`await preparePdfs(doc)` reads them first)
+      pdf(p) { const rec = findPdf(doc, p.file), vec = rec && peekVector(rec, p.page, p.layers); if (vec) emitPdf(vec, p, this); },
+    }, { m: v.m, plot: true, frozen: v.frozen || null, penLt: table.pens && Object.keys(table.pens).length ? (c) => penStyleOf(table, c).lt : null, ltTable: table.ltScale > 0 ? table.ltScale : 1 });
+    return { clip: v.clip, pictures, fills, masks, strokes: [...strokes].map(([k, prims]) => { const [color, lw, a, cap, join] = k.split('|'); return { color, lw: +lw, alpha: +a, ...(cap ? { cap } : {}), ...(join ? { join } : {}), prims }; }), points, texts };
   });
   return { w: sheet.w, h: sheet.h, name: sheet.name, views, ...(files.size ? { pictureFiles: files } : {}) };
 }
+
+// ---------------------------------------------------------------------------
+// PDF underlays (0.7 D7.24): their pages are read before a plot is built (displayList is synchronous)
+
+/** The PDF pages a drawing's underlays show, whose file CadCraft has: [{ rec, page }] (each once). */
+export function pdfUnderlays(doc) {
+  const seen = new Set(), out = [];
+  for (const { block } of pdfRefs(doc)) {
+    const fr = pdfFrame(block), rec = fr && findPdf(doc, fr.pdf.file);
+    if (!rec || fr.pdf.off) continue;
+    const k = rec.name + '|' + fr.pdf.page + '|' + JSON.stringify(fr.pdf.layers || {});
+    if (!seen.has(k)) { seen.add(k); out.push({ rec, page: fr.pdf.page, layers: fr.pdf.layers || {} }); }
+  }
+  return out;
+}
+/** Is any underlay page not read yet (so a plot built now would leave it out)? */
+export function pdfPending(doc) { return pdfUnderlays(doc).some(({ rec, page, layers }) => !peekVector(rec, page, layers)); }
+/** Read every underlay page (cached). → how many could not be read */
+export function readPdfUnderlays(doc) { return preparePdfs(doc, pdfUnderlays(doc)); }
 
 // ---------------------------------------------------------------------------
 // PDF
@@ -117,32 +159,91 @@ export function displayList(doc, sheet, { mono = true, style } = {}) {
 /** A stroke's width on paper (mm): its lineweight, 0 as the thinnest line (0.05 mm), the default as the plot's pen. */
 const penFor = (lw, pen) => (lw >= 0 ? Math.max(lw, 0.05) : pen);
 
-export async function toPdf(list, { pen = 0.25, title = list.name, maxDpi = 0 } = {}) {
+export async function toPdf(list, { pen = 0.25, title = list.name, maxDpi = 0, font } = {}) {
   const images = [];
-  const page = await pageOf(list, pen, { images, maxDpi });
-  const bytes = assemble([page], title, images);
-  return { bytes, report: { missing: page.missing, texts: page.texts, size: bytes.length, compressed: page.flate, pictures: page.pictures, shrunk: page.shrunk, kept: page.kept } };
+  const fu = await fontFor([list], font);
+  const page = await pageOf(list, pen, { images, maxDpi, use: fu.use });
+  const embedded = fu.use ? await fontObjects(fu.use, objectsBefore(1, images), deflate) : null;
+  const bytes = assemble([page], title, images, embedded);
+  return { bytes, report: { missing: page.missing, texts: page.texts, size: bytes.length, compressed: page.flate, pictures: page.pictures, shrunk: page.shrunk, kept: page.kept, ...fontReport(fu, embedded) } };
 }
 
 /**
  * Several sheets in one PDF (0.4 C36, PUBLISH): one page each, at its own paper size, with a bookmark per page.
  * lists = displayList(...) results; names = the bookmarks. → { bytes, report: { pages, missing, texts, size } }
  */
-export async function toPdfPages(lists, { pen = 0.25, title = 'Drawing', names = [], maxDpi = 0 } = {}) {
+export async function toPdfPages(lists, { pen = 0.25, title = 'Drawing', names = [], maxDpi = 0, font } = {}) {
   const pages = [], images = [];
-  for (const l of lists) pages.push(await pageOf(l, pen, { images, maxDpi }));
+  const fu = await fontFor(lists, font);
+  for (const l of lists) pages.push(await pageOf(l, pen, { images, maxDpi, use: fu.use }));
   pages.forEach((p, i) => { p.name = names[i] || lists[i].name || 'Page ' + (i + 1); });
-  const bytes = assemble(pages, title, images);
-  return { bytes, report: { pages: pages.length, missing: pages.reduce((s, p) => s + p.missing, 0), texts: pages.reduce((s, p) => s + p.texts, 0), size: bytes.length } };
+  const embedded = fu.use ? await fontObjects(fu.use, objectsBefore(pages.length, images), deflate) : null;
+  const bytes = assemble(pages, title, images, embedded);
+  return { bytes, report: { pages: pages.length, missing: pages.reduce((s, p) => s + p.missing, 0), texts: pages.reduce((s, p) => s + p.texts, 0), size: bytes.length, ...fontReport(fu, embedded) } };
 }
+
+// ---------------------------------------------------------------------------
+// The embedded font (0.6.1 FIX-061-PDF-CHARS; pdf-font.js)
+
+let fontSource = null, fontCache = null, cjkSource = null, cjkCache = null;
+/** Where the embedded font's bytes come from: the bytes, an async loader, or null for the default (the app's import map
+ *  `liberation-sans/`, else the vendor folder beside the app). Node (tests, the CLI) passes the bytes: it has no fetch for files. */
+export function setPdfFont(src) { fontSource = src; fontCache = null; }
+/** The same for the CJK font (D7.16: Chinese, Japanese and Korean text), used only when a drawing's text needs it. */
+export function setPdfCjkFont(src) { cjkSource = src; cjkCache = null; }
+async function fetchFont(src, urls) {
+  let bytes = null;
+  if (src instanceof Uint8Array || src instanceof ArrayBuffer) bytes = src;
+  else if (typeof src === 'function') bytes = await src();
+  else {
+    for (const u of urls) {
+      if (!/^https?:|^blob:/.test(u) || typeof fetch !== 'function') continue;
+      try { const r = await fetch(u); if (r.ok) { bytes = new Uint8Array(await r.arrayBuffer()); break; } } catch { /* the next place */ }
+    }
+  }
+  if (!bytes) throw new Error('the PDF font could not be loaded');   // i18n-ignore (report.fontError, for developers)
+  return bytes;
+}
+async function loadFont() {
+  if (!fontCache) fontCache = (async () => {
+    const urls = [];
+    try { urls.push(import.meta.resolve('liberation-sans/LiberationSans-Regular.ttf')); } catch { /* no import map (Node) */ }
+    urls.push(new URL('../../../vendor/liberation-sans/current/LiberationSans-Regular.ttf', import.meta.url).href);
+    return readTtf(await fetchFont(fontSource, urls));
+  })();
+  try { return await fontCache; } catch (err) { fontCache = null; throw err; }
+}
+/** The CJK font (assets/vendor/cjk-sans: Noto Sans SC + KR subset, OFL-1.1, ~10 MB): fetched the first time a plot needs it. */
+async function loadCjkFont() {
+  if (!cjkCache) cjkCache = (async () => {
+    const urls = [new URL('../../../vendor/cjk-sans/current/CadCraftCJKSans-Regular.ttf', import.meta.url).href];
+    return readTtf(await fetchFont(cjkSource, urls), { name: 'CadCraftCJKSans', family: 'CadCraft CJK Sans' });   // i18n-ignore (a font's name)
+  })();
+  try { return await cjkCache; } catch (err) { cjkCache = null; throw err; }
+}
+/** Does any text of these display lists need more than WinAnsi? Then the font (or why not). → { use, error } */
+async function fontFor(lists, want) {
+  if (want === false) return { use: null };
+  const lines = [];
+  for (const l of lists) for (const v of l.views) for (const t of v.texts) for (const line of textLayout(t.e).lines) if (line && winAnsi(line).missing) lines.push(line);
+  if (!lines.length) return { use: null };
+  let font;
+  try { font = await loadFont(); } catch (err) { return { use: null, error: err.message || String(err) }; }
+  // Liberation Sans has Latin, Greek and Cyrillic; anything it lacks (Han, kana, Hangul) takes the CJK font, which has those too
+  if (lines.some((line) => missingGlyphs(font, line))) {
+    try { font = await loadCjkFont(); } catch (err) { return { use: new FontUse(font), error: 'the CJK font could not be loaded' }; }   // i18n-ignore (report.fontError)
+  }
+  return { use: new FontUse(font) };
+}
+const fontReport = (fu, embedded) => (embedded ? { font: embedded.name, fontGlyphs: embedded.glyphs - 1, fontBytes: embedded.size, ...(fu.error ? { fontError: fu.error } : {}) } : { font: 'Helvetica', ...(fu.error ? { fontError: fu.error } : {}) });
 
 /**
  * One page's content stream (compressed when the browser can) from a display list. Pictures (0.5 WL.13) go in as image
  * XObjects at their own resolution (`maxDpi` > 0: a cap on paper), under the page's linework, clipped to their frames;
  * `images` collects them for the whole file (a picture used on several pages is stored once).
  */
-async function pageOf(list, pen, { images = [], maxDpi = 0 } = {}) {
-  const out = new Ops();
+async function pageOf(list, pen, { images = [], maxDpi = 0, use = null } = {}) {
+  const out = new Ops(use);
   let missing = 0, nTexts = 0, nPics = 0, shrunk = 0, kept = 0;
   const xobjects = new Map();   // image index → /Im<n>
   out.raw((72 / 25.4).toFixed(9) + ' 0 0 ' + (72 / 25.4).toFixed(9) + ' 0 0 cm');   // everything after this is in mm
@@ -183,15 +284,18 @@ async function pageOf(list, pen, { images = [], maxDpi = 0 } = {}) {
       }
       out.raw('f*');
     }
-    let width = pen;
+    let width = pen, cap = 1, join = 1;
     for (const s of v.strokes) {
       const w = penFor(s.lw, pen);
       if (w !== width) { out.raw(num(w) + ' w'); width = w; }
       out.alpha(s.alpha);
       out.strokeColor(s.color);
+      const J = CAP_CODE[s.cap || 'round'], j = JOIN_CODE[s.join || 'round'];
+      if (J !== cap || j !== join) { out.raw(J + ' J ' + j + ' j'); cap = J; join = j; }   // a pen's line end and join style (0.7 DC.14)
       out.path(s.prims);
       out.raw('S');
     }
+    if (cap !== 1 || join !== 1) out.raw('1 J 1 j');
     if (width !== pen) out.raw(num(pen) + ' w');
     out.alpha(1);
     for (const mk of v.masks || []) {   // over the linework, under the text (WL.8)
@@ -208,11 +312,11 @@ async function pageOf(list, pen, { images = [], maxDpi = 0 } = {}) {
   }
   const content = new TextEncoder().encode(out.lines.join('\n') + '\n');
   const packed = await deflate(content);
-  return { w: list.w, h: list.h, content: packed || content, flate: !!packed, missing, texts: nTexts, alphas: out.alphas, xobjects: [...xobjects.keys()], pictures: nPics, shrunk, kept };
+  return { w: list.w, h: list.h, content: packed || content, flate: !!packed, missing, texts: nTexts, alphas: out.alphas, xobjects: [...xobjects.keys()], pictures: nPics, shrunk, kept, font2: out.font2 };
 }
 
 class Ops {
-  constructor() { this.lines = []; this.alphas = []; this.reset(); }
+  constructor(use = null) { this.lines = []; this.alphas = []; this.use = use; this.font2 = false; this.reset(); }
   reset() { this.sc = null; this.fc = null; this.ga = 1; }
   raw(s) { this.lines.push(s); }
   /** Transparency (track P): an ExtGState /GA<n> per alpha used on the page (assemble() writes them). */
@@ -242,25 +346,67 @@ class Ops {
       }
     }
   }
-  /** One text entity (mm), Helvetica. Returns how many characters had to print as "?". */
+  /** One text entity (mm): Helvetica, or the embedded font (/F2) when the drawing needs it. Returns how many characters had to print as "?". */
   text(e, color) {
     const lay = textLayout(e), fs = e.h * FONT_EM, wf = e.wf || 1;
+    if (lay.runs) return this.richText(e, color, lay);   // inline format codes (mtext.js, 0.7 D7.17)
     const c = Math.cos(e.rot || 0), s = Math.sin(e.rot || 0);
     let missing = 0;
     this.fillColor(color);
     lay.lines.forEach((line, i) => {
       if (!line) return;
-      const enc = winAnsi(line);
+      const enc = this.use ? this.use.encode(line) : winAnsi(line);
       missing += enc.missing;
+      if (this.use) this.font2 = true;
       const w = enc.width / 1000 * fs * wf;
       const lx = e.ha === 'center' ? -w / 2 : e.ha === 'right' ? -w : 0, ly = lay.baselines[i];
       const x = e.x + lx * c - ly * s, y = e.y + lx * s + ly * c;
       const k = e.obl ? fs * Math.tan(e.obl) : 0;   // oblique angle (P.7): x leans by tan(angle) per unit of height
-      this.raw('BT /F1 1 Tf ' + [fs * wf * c, fs * wf * s, k * c - fs * s, k * s + fs * c, x, y].map(num).join(' ') + ' Tm (' + enc.str + ') Tj ET');   // i18n-ignore: PDF operators
+      this.raw('BT /F' + (this.use ? 2 : 1) + ' 1 Tf ' + [fs * wf * c, fs * wf * s, k * c - fs * s, k * s + fs * c, x, y].map(num).join(' ') + ' Tm ' + (this.use ? '<' + enc.hex + '>' : '(' + enc.str + ')') + ' Tj ET');   // i18n-ignore: PDF operators
     });
     return missing;
   }
 }
+
+Ops.prototype.richText = function richText(e, color, lay) {
+  const base = e.h * FONT_EM, wf = e.wf || 1;
+  const c = Math.cos(e.rot || 0), s = Math.sin(e.rot || 0);
+  const at = (lx, ly) => ({ x: e.x + lx * c - ly * s, y: e.y + lx * s + ly * c });   // a point in the text's own frame (mm)
+  let missing = 0;
+  lay.lines.forEach((_, i) => {
+    const W = lay.widths[i], x0 = e.ha === 'center' ? -W / 2 : e.ha === 'right' ? -W : 0, ly = lay.baselines[i];
+    const put = (str, size, lx, ly2, st, col) => {
+      if (!str) return;
+      const enc = this.use ? this.use.encode(str) : winAnsi(str);
+      missing += enc.missing;
+      if (this.use) this.font2 = true;
+      const p = at(lx, ly2), k = size * (Math.tan(e.obl || 0) + (st?.i ? 0.2126 : 0));
+      this.fillColor(col);
+      if (st?.b) { this.strokeColor(col); this.raw(num(size * 0.03) + ' w'); }
+      this.raw('BT /F' + (this.use ? 2 : 1) + ' 1 Tf ' + (st?.b ? '2 Tr ' : '0 Tr ') + [size * wf * c, size * wf * s, k * c - size * s, k * s + size * c, p.x, p.y].map(num).join(' ') + ' Tm ' + (this.use ? '<' + enc.hex + '>' : '(' + enc.str + ')') + ' Tj ET');   // i18n-ignore: PDF operators
+    };
+    const rule = (lx, ly2, w, col, thick) => {
+      const a = at(lx, ly2), b = at(lx + w, ly2);
+      this.strokeColor(col);
+      this.raw(num(thick) + ' w ' + num(a.x) + ' ' + num(a.y) + ' m ' + num(b.x) + ' ' + num(b.y) + ' l S');
+    };
+    for (const r of lay.runs[i]) {
+      const st = r.st || {}, col = runColor(st, color), size = base * r.hf * (r.stack ? STACK_SCALE : 1), lx = x0 + r.x, thick = Math.max(0.05, e.h * 0.06);
+      if (r.stack) {
+        const bar = ly + 0.36 * e.h * r.hf, cw = (str) => advance(str) / 1000 * size * wf;
+        put(r.stack.num, size, lx + (r.w - cw(r.stack.num)) / 2, bar + 0.12 * e.h * r.hf, st, col);
+        put(r.stack.den, size, lx + (r.w - cw(r.stack.den)) / 2, bar - 0.12 * e.h * r.hf - 0.718 * size, st, col);
+        if (r.stack.sep !== '^') rule(lx, bar, r.w, col, thick);
+      } else {
+        put(r.text, size, lx, ly, st, col);
+        if (st.u) rule(lx, ly - 0.14 * e.h * r.hf, r.w, col, thick);
+        if (st.o) rule(lx, ly + 1.16 * e.h * r.hf, r.w, col, thick);
+        if (st.k) rule(lx, ly + 0.36 * e.h * r.hf, r.w, col, thick);
+      }
+    }
+  });
+  return missing;
+};
 
 /** Cubic Béziers for an arc from angle a to b (either direction), ≤ 90° each: [x1 y1 x2 y2 x3 y3]. */
 export function arcBeziers(cx, cy, r, a, b) {
@@ -315,9 +461,16 @@ async function deflate(bytes) {
   } catch { return null; }
 }
 
-/** pages [{ w, h (mm), content, flate, name?, xobjects? }] (+ the images they use) → a PDF 1.4 file; with more than one
- *  page, a bookmark per page. */
-function assemble(pages, title, images = []) {
+/** The object number after the pages, bookmarks and pictures of a file with n pages (the embedded font's objects start there). */
+function objectsBefore(n, images) {
+  let k = 6 + 2 * n + (n > 1 ? n : 0);
+  for (const im of images) k += im.smask ? 2 : 1;
+  return k;
+}
+
+/** pages [{ w, h (mm), content, flate, name?, xobjects? }] (+ the images they use, + the embedded font's objects) → a PDF
+ *  1.4 file; with more than one page, a bookmark per page. */
+function assemble(pages, title, images = [], embedded = null) {
   const enc = new TextEncoder();
   const parts = [], offsets = [];
   let size = 0;
@@ -326,7 +479,14 @@ function assemble(pages, title, images = []) {
   const pt = (mm) => num(mm * 72 / 25.4);
   const now = new Date(), pad = (x) => String(x).padStart(2, '0');
   const date = 'D:' + now.getUTCFullYear() + pad(now.getUTCMonth() + 1) + pad(now.getUTCDate()) + pad(now.getUTCHours()) + pad(now.getUTCMinutes()) + pad(now.getUTCSeconds()) + 'Z';
-  const pdfText = (s) => '(' + winAnsi(String(s || '')).str + ')';
+  // titles and bookmarks: PDFDocEncoding = Latin-1 above 0xA0, so plain Latin text as before; anything else as UTF-16BE
+  const pdfText = (s) => {
+    s = String(s || '');
+    if (/^[\x20-\x7e\xa0-\xff]*$/.test(s)) return '(' + winAnsi(s).str + ')';
+    let h = 'FEFF';
+    for (let i = 0; i < s.length; i++) h += s.charCodeAt(i).toString(16).padStart(4, '0').toUpperCase();
+    return '<' + h + '>';
+  };
 
   push('%PDF-1.4\n');
   push(Uint8Array.from([0x25, 0xe2, 0xe3, 0xcf, 0xd3, 0x0a]));   // a binary comment: "this file has 8-bit data"
@@ -345,7 +505,7 @@ function assemble(pages, title, images = []) {
   pages.forEach((p, i) => {
     const gs = (p.alphas || []).length ? ' /ExtGState << ' + p.alphas.map((a, k) => '/GA' + k + ' << /Type /ExtGState /CA ' + num(a) + ' /ca ' + num(a) + ' >>').join(' ') + ' >>' : '';
     const xo = (p.xobjects || []).length ? ' /XObject << ' + p.xobjects.map((k) => '/Im' + k + ' ' + imgNoOf(k) + ' 0 R').join(' ') + ' >>' : '';
-    obj(pageNo(i), '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + pt(p.w) + ' ' + pt(p.h) + '] /Resources << /Font << /F1 3 0 R >>' + gs + xo + ' >> /Contents ' + (pageNo(i) + 1) + ' 0 R >>');
+    obj(pageNo(i), '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + pt(p.w) + ' ' + pt(p.h) + '] /Resources << /Font << /F1 3 0 R' + (embedded && p.font2 ? ' /F2 ' + embedded.objects[0].n + ' 0 R' : '') + ' >>' + gs + xo + ' >> /Contents ' + (pageNo(i) + 1) + ' 0 R >>');
     obj(pageNo(i) + 1, ['<< /Length ' + p.content.length + (p.flate ? ' /Filter /FlateDecode' : '') + ' >>\nstream\n', p.content, '\nendstream']);
   });
   if (outlines) pages.forEach((p, i) => obj(itemNo(i), '<< /Title ' + pdfText(p.name) + ' /Parent 5 0 R' + (i ? ' /Prev ' + itemNo(i - 1) + ' 0 R' : '') + (i < n - 1 ? ' /Next ' + itemNo(i + 1) + ' 0 R' : '') + ' /Dest [' + pageNo(i) + ' 0 R /Fit] >>'));
@@ -355,7 +515,12 @@ function assemble(pages, title, images = []) {
       + (im.smask ? ' /SMask ' + (no + 1) + ' 0 R' : '') + ' /Length ' + im.data.length + ' >>\nstream\n', im.data, '\nendstream']);
     if (im.smask) obj(no + 1, ['<< /Type /XObject /Subtype /Image /Width ' + im.w + ' /Height ' + im.h + ' /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ' + im.smask.data.length + ' >>\nstream\n', im.smask.data, '\nendstream']);
   });
-  const total = images.length ? imgNo[imgNo.length - 1] + (images[images.length - 1].smask ? 2 : 1) : imgBase;
+  let total = images.length ? imgNo[imgNo.length - 1] + (images[images.length - 1].smask ? 2 : 1) : imgBase;
+  if (embedded) {
+    if (embedded.objects[0].n !== total) throw new Error('plot: the font objects are numbered from ' + embedded.objects[0].n + ', not ' + total);   // i18n-ignore (a bug check)
+    for (const o of embedded.objects) obj(o.n, o.parts);
+    total += embedded.objects.length;
+  }
   const xref = size;
   push('xref\n0 ' + total + '\n0000000000 65535 f \n' + offsets.slice(1, total).map((o) => String(o).padStart(10, '0') + ' 00000 n \n').join(''));
   push('trailer\n<< /Size ' + total + ' /Root 1 0 R /Info 4 0 R >>\nstartxref\n' + xref + '\n%%EOF\n');
@@ -389,7 +554,7 @@ export function drawPreview(ctx, list, { pxPerMm, pen = 0.25, font = 'Helvetica,
     for (const s of v.strokes) {
       ctx.lineWidth = Math.max(penFor(s.lw, pen), 0.6 / pxPerMm);
       ctx.globalAlpha = s.alpha ?? 1;
-      ctx.strokeStyle = s.color; ctx.beginPath();
+      ctx.strokeStyle = s.color; ctx.lineCap = s.cap || 'round'; ctx.lineJoin = s.join || 'round'; ctx.beginPath();
       for (const q of s.prims) {
         if (q.k === 'L') { ctx.moveTo(q.x1, q.y1); ctx.lineTo(q.x2, q.y2); }
         else { const a = q.rev ? q.a1 : q.a0, b = q.rev ? q.a0 : q.a1; ctx.moveTo(q.cx + q.r * Math.cos(a), q.cy + q.r * Math.sin(a)); ctx.arc(q.cx, q.cy, q.r, a, b, !!q.rev); }
@@ -411,13 +576,128 @@ export function drawPreview(ctx, list, { pxPerMm, pen = 0.25, font = 'Helvetica,
       ctx.globalAlpha = t.alpha ?? 1;
       ctx.fillStyle = t.color; ctx.font = fs.toFixed(2) + 'px ' + font;
       ctx.textAlign = e.ha === 'center' ? 'center' : e.ha === 'right' ? 'right' : 'left'; ctx.textBaseline = 'alphabetic';
-      lay.lines.forEach((line, i) => ctx.fillText(line, 0, -lay.baselines[i] * pxPerMm));
+      if (lay.runs) lay.lines.forEach((_, i) => fillRichLine(ctx, lay, i, e, { scale: pxPerMm, family: font, color: t.color }));   // inline format codes (mtext.js)
+      else lay.lines.forEach((line, i) => ctx.fillText(line, 0, -lay.baselines[i] * pxPerMm));
       ctx.setTransform(...T);
     }
     ctx.globalAlpha = 1;
     ctx.restore();
   }
   ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// SVG and PNG (0.7 D7.20): the same display list as the PDF and the preview. Pictures are not drawn in either (the PDF
+// carries them); both say how many were left out.
+
+const xml = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+const svgOpacity = (a) => (Number.isFinite(a) && a < 1 ? ` opacity="${num(Math.max(0, a))}"` : '');
+
+/** A stroke group's path data (mm, y up: the page flips it once). Arcs go in pieces of at most 90°, as the PDF's Béziers do. */
+function svgPath(prims) {
+  let d = '', lx = Infinity, ly = Infinity;
+  const to = (x, y) => { lx = x; ly = y; };
+  for (const q of prims) {
+    if (q.k === 'L') {
+      if (Math.abs(q.x1 - lx) > 1e-9 || Math.abs(q.y1 - ly) > 1e-9) d += `M${num(q.x1)} ${num(q.y1)}`;
+      d += `L${num(q.x2)} ${num(q.y2)}`; to(q.x2, q.y2);
+    } else {
+      const from = q.rev ? q.a1 : q.a0, end = q.rev ? q.a0 : q.a1, sweep = end - from;
+      const n = Math.max(1, Math.ceil(Math.abs(sweep) / (Math.PI / 2) - 1e-9)), step = sweep / n, flag = sweep >= 0 ? 1 : 0;
+      const sx = q.cx + q.r * Math.cos(from), sy = q.cy + q.r * Math.sin(from);
+      if (Math.abs(sx - lx) > 1e-9 || Math.abs(sy - ly) > 1e-9) d += `M${num(sx)} ${num(sy)}`;
+      for (let i = 1; i <= n; i++) {
+        const t = from + step * i, x = q.cx + q.r * Math.cos(t), y = q.cy + q.r * Math.sin(t);
+        d += `A${num(q.r)} ${num(q.r)} 0 0 ${flag} ${num(x)} ${num(y)}`; to(x, y);
+      }
+    }
+  }
+  return d;
+}
+const svgLoops = (loops) => loops.filter((l) => l.length >= 6).map((l) => { let d = `M${num(l[0])} ${num(l[1])}`; for (let i = 2; i + 1 < l.length; i += 2) d += `L${num(l[i])} ${num(l[i + 1])}`; return d + 'Z'; }).join('');
+
+/**
+ * One sheet as an SVG document (millimetres: width/height in mm, viewBox in the same units). Lines and arcs are paths,
+ * fills keep their holes, text is `<text>` in the drawing font (the viewer's own font for letters it lacks).
+ * → { text, report: { texts, pictures } } (`pictures`: how many were left out).
+ */
+export function toSvg(list, { pen = 0.25, title = list.name, font = 'Helvetica, Arial, sans-serif' } = {}) {
+  const out = [];
+  let texts = 0, pictures = 0;
+  out.push(`<?xml version="1.0" encoding="UTF-8"?>`);
+  out.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${num(list.w)}mm" height="${num(list.h)}mm" viewBox="0 0 ${num(list.w)} ${num(list.h)}">`);
+  out.push(`<title>${xml(title || '')}</title>`);
+  out.push(`<rect width="${num(list.w)}" height="${num(list.h)}" fill="#ffffff"/>`);
+  list.views.forEach((v, vi) => {
+    pictures += (v.pictures || []).length;
+    const clip = v.clip && v.clip.length >= 3;
+    if (clip) out.push(`<clipPath id="v${vi}"><path d="M${v.clip.map((p) => num(p.x) + ' ' + num(p.y)).join('L')}Z"/></clipPath>`);
+    out.push(`<g transform="matrix(1 0 0 -1 0 ${num(list.h)})"${clip ? ` clip-path="url(#v${vi})"` : ''}>`);
+    for (const f of v.fills) { const d = svgLoops(f.loops); if (d) out.push(`<path d="${d}" fill="${f.color}" fill-rule="evenodd"${svgOpacity(f.alpha).replace('opacity', 'fill-opacity')}/>`); }
+    for (const s of v.strokes) {
+      const d = svgPath(s.prims);
+      if (d) out.push(`<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${num(penFor(s.lw, pen))}" stroke-linecap="${s.cap || 'round'}" stroke-linejoin="${s.join || 'round'}"${svgOpacity(s.alpha).replace('opacity', 'stroke-opacity')}/>`);
+    }
+    for (const mk of v.masks || []) { const d = svgLoops([mk.loop]); if (d) out.push(`<path d="${d}" fill="${mk.color}"/>`); }
+    for (const p of v.points) out.push(`<path d="M${num(p.x)} ${num(p.y)}L${num(p.x)} ${num(p.y)}" fill="none" stroke="${p.color}" stroke-width="${num(pen)}" stroke-linecap="round"/>`);
+    for (const t of v.texts) {
+      const e = t.e, lay = textLayout(e), fs = e.h * FONT_EM, wf = e.wf || 1;
+      const anchor = e.ha === 'center' ? 'middle' : e.ha === 'right' ? 'end' : 'start';
+      // y is up in this group: flip back so the letters stand, then rotate (counter-clockwise), widen and lean
+      const tf = `translate(${num(e.x)} ${num(e.y)}) rotate(${num((e.rot || 0) * 180 / Math.PI)}) scale(${num(wf)} -1)` + (e.obl ? ` skewX(${num(-e.obl * 180 / Math.PI)})` : '');
+      lay.lines.forEach((line, i) => {
+        if (!line) return;
+        texts++;
+        out.push(`<text transform="${tf}" x="0" y="${num(-lay.baselines[i])}" font-family="${xml(font)}" font-size="${num(fs)}" text-anchor="${anchor}" fill="${t.color}"${svgOpacity(t.alpha)} xml:space="preserve">${xml(line)}</text>`);
+      });
+    }
+    out.push('</g>');
+  });
+  out.push('</svg>');
+  return { text: out.join('\n') + '\n', report: { texts, pictures } };
+}
+
+// Paper names the way printers list them → [short, long] mm (either way round matches a sheet).
+const NAMED_PAPERS = {
+  letter: [215.9, 279.4], legal: [215.9, 355.6], tabloid: [279.4, 431.8], ledger: [279.4, 431.8], '11x17': [279.4, 431.8],
+  ansic: [431.8, 558.8], ansid: [558.8, 863.6], ansie: [863.6, 1117.6], archc: [457.2, 609.6], archd: [609.6, 914.4], arche: [914.4, 1219.2],
+};
+/** Size in mm of a printer's paper name ("A3", "Letter", "ARCH D", "24 x 36 in", "420 x 297 mm"), or null when it names none we know. */
+export function paperNameMm(name) {
+  const n = String(name).trim(), key = n.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const iso = /^a(\d)(?![0-9])/i.exec(n);
+  if (iso && +iso[1] <= 6) { const k = +iso[1]; let w = 841, h = 1189; for (let i = 0; i < k; i++) { [w, h] = [Math.floor(h / 2), w]; } return [Math.min(w, h), Math.max(w, h)]; }
+  for (const [k, v] of Object.entries(NAMED_PAPERS)) if (key === k || key.startsWith(k)) return v;
+  const m = /(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\s*(mm|cm|in|inch|")?/i.exec(n);
+  if (m) {
+    const u = (m[3] || '').toLowerCase(), k = u === 'mm' ? 1 : u === 'cm' ? 10 : (u === 'in' || u === 'inch' || u === '"') ? 25.4 : null;
+    if (k) { const a = +m[1] * k, b = +m[2] * k; return [Math.min(a, b), Math.max(a, b)]; }
+  }
+  return null;
+}
+/** The printer paper that is the sheet's size (within 2 mm, either way round), or '' → the printer's own paper. */
+export function matchPaper(names, w, h) {
+  const a = Math.min(w, h), b = Math.max(w, h);
+  return names.find((nm) => { const d = paperNameMm(nm); return d && Math.abs(d[0] - a) <= 2 && Math.abs(d[1] - b) <= 2; }) || '';
+}
+
+/** Pixels for a sheet at `dpi`, held under a side and a total the browser's canvas can make (`capped`: the dpi was lowered). */
+export function pngSize(w, h, dpi, { maxSide = 16000, maxPixels = 100e6 } = {}) {
+  let d = Math.max(36, Math.min(1200, +dpi || 300));
+  const px = (k) => [Math.max(1, Math.round(w / 25.4 * k)), Math.max(1, Math.round(h / 25.4 * k))];
+  let [pw, ph] = px(d), capped = false;
+  while ((Math.max(pw, ph) > maxSide || pw * ph > maxPixels) && d > 36) { d = Math.floor(d * 0.9); [pw, ph] = px(d); capped = true; }
+  return { w: pw, h: ph, dpi: d, capped };
+}
+
+/** The sheet as a PNG (browser: canvas): { blob, w, h, dpi, capped, pictures }. White paper, no transparency. */
+export async function toPngBlob(list, { dpi = 300, pen = 0.25, font = 'Helvetica, Arial, sans-serif' } = {}) {
+  const size = pngSize(list.w, list.h, dpi);
+  const cv = typeof OffscreenCanvas === 'function' ? new OffscreenCanvas(size.w, size.h) : Object.assign(document.createElement('canvas'), { width: size.w, height: size.h });
+  const ctx = cv.getContext('2d');
+  drawPreview(ctx, list, { pxPerMm: size.dpi / 25.4, pen, font });
+  const blob = cv.convertToBlob ? await cv.convertToBlob({ type: 'image/png' }) : await new Promise((ok, no) => cv.toBlob((b) => (b ? ok(b) : no(new Error('png'))), 'image/png'));
+  return { blob, w: size.w, h: size.h, dpi: size.dpi, capped: size.capped, pictures: list.views.reduce((n, v) => n + (v.pictures || []).length, 0) };
 }
 
 /** The model area a plot covers when asked for its extents. */

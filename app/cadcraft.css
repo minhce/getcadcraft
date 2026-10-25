@@ -26,6 +26,15 @@
   border-bottom: var(--pen-2) solid var(--ink);
   scrollbar-width: thin;
 }
+/* Toolbar rows (CP.1, GJoe2 getcadcraft/cadcraft#2; Settings › CadCraft › Toolbar rows). Wrap = the bars as they were.
+   1 = one line that scrolls sideways; 2 = the groups fill two lines (column by column) and scroll sideways when they do not fit. */
+.cc[data-toolbar-rows="1"] :is(.cc-tools, .cc-in-rbody, .cc-in-quickbar) { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
+.cc[data-toolbar-rows="1"] :is(.cc-tools, .cc-in-rbody, .cc-in-quickbar) > * { flex-shrink: 0; }
+.cc[data-toolbar-rows="2"] :is(.cc-tools, .cc-in-rbody, .cc-in-quickbar) {
+  display: grid; grid-auto-flow: column; grid-template-rows: repeat(2, auto); grid-auto-columns: max-content;
+  align-items: start; overflow-x: auto; scrollbar-width: thin;
+}
+.cc[data-toolbar-rows="2"] :is(.cc-tools, .cc-in-rbody, .cc-in-quickbar)[data-rows-wrap] { display: flex; flex-wrap: wrap; }
 .cc-tool-group { display: flex; flex-direction: column; padding: .25rem .35rem .3rem; border-right: var(--pen-1) solid var(--line); flex: 0 0 auto; }
 .cc-tool-group:last-of-type { border-right: 0; }
 .cc-tool-label { font-size: .75rem; font-weight: 600; color: var(--ink-2); padding: 0 .2rem .15rem; }
@@ -246,7 +255,11 @@ body:not([data-shell-tb="labels"]) .cc.cc-fit-compact .cc-tool > span {
   border-radius: var(--radius);
   pointer-events: none;
 }
-.cc-hint-h { margin: 0 0 .35rem; font-weight: 700; font-stretch: 112%; }
+.cc-hint-head { display: flex; align-items: flex-start; justify-content: space-between; gap: .5rem; margin-bottom: .35rem; }
+.cc-hint-h { margin: 0; font-weight: 700; font-stretch: 112%; }
+.cc-hint-close { pointer-events: auto; padding: .15rem .35rem; font-size: .8125rem; line-height: 1; color: var(--ink); background: transparent; border: var(--pen-1) solid transparent; border-radius: var(--radius); cursor: pointer; }
+.cc-hint-close:hover { border-color: var(--line); background: var(--sheet); }
+.cc-hint-close:focus-visible { outline: var(--pen-3) solid var(--action); outline-offset: 1px; }
 .cc-dyn {   /* dynamic input (F12) by the crosshair */
   position: absolute; z-index: 3; display: flex; align-items: center; gap: .3rem; padding: .2rem .35rem; font-size: .8125rem;
   color: var(--ink); background: var(--sheet-2); border: var(--pen-1) solid var(--ink-2); border-radius: var(--radius); pointer-events: none; white-space: nowrap;
@@ -760,3 +773,130 @@ html.cc-phone .cc-alignpanel { top: auto; bottom: .5rem; }
   .cc-ps-main { grid-template-columns: minmax(0, 1fr); }
   .cc-ps-grid { grid-template-columns: repeat(15, minmax(0, 1fr)); }
 }
+
+/* History panel (0.7 D7.31; history-ui.js): not modal, at the right of the drawing; the compare's colours as in view.js COMPARE_COLORS */
+.cc-hist { width: min(34rem, calc(100vw - 2rem)); position: fixed; inset: auto 1rem auto auto; top: 5.5rem; margin: 0; z-index: 60; }   /* above the floating panels (z-index up to 46) */
+.cc-hist-body { padding: .75rem 1rem; display: grid; gap: .6rem; max-height: calc(100vh - 9rem); overflow: auto; }
+.cc-hist-tabs { display: flex; gap: 1rem; flex-wrap: wrap; font-size: .875rem; }
+.cc-hist-against { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .5rem; align-items: center; font-size: .875rem; }
+.cc-hist-list, .cc-hist-items { list-style: none; margin: 0; padding: 0; display: grid; }
+.cc-hist-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .5rem; align-items: center; padding: .4rem 0; border-bottom: var(--pen-1) solid var(--grid); }
+.cc-hist-what { display: grid; gap: .1rem; font-size: .875rem; }
+.cc-hist-meta { margin: 0; }
+.cc-hist-acts { display: flex; gap: .3rem; flex-wrap: wrap; justify-content: flex-end; }
+.cc-hist-error { color: var(--layer-red); }
+.cc-hist-h3 { font-size: .95rem; margin: .4rem 0 0; }
+.cc-hist-result { display: grid; gap: .45rem; border-top: var(--pen-2) solid var(--line); padding-top: .5rem; }
+.cc-hist-legend { list-style: none; margin: 0; padding: 0; display: flex; gap: .9rem; flex-wrap: wrap; font-size: .8125rem; }
+.cc-hist-legend li, .cc-hist-item { display: flex; align-items: center; gap: .4rem; }
+.cc-hist-chip { width: .9rem; height: .5rem; flex: none; border-radius: 1px; background: var(--chip, currentColor); }
+.cc-hist .is-added { --chip: #1a9850; }
+.cc-hist .is-removed { --chip: #d73027; }
+.cc-hist .is-changed { --chip: #e08a00; }
+.cc-hist-legend .is-changed .cc-hist-chip { background: repeating-linear-gradient(90deg, #e08a00 0 4px, transparent 4px 7px); }
+.cc-hist-items { max-height: 14rem; overflow: auto; border-top: var(--pen-1) solid var(--grid); }
+.cc-hist-item { appearance: none; background: transparent; border: 0; border-bottom: var(--pen-1) solid var(--grid); padding: .25rem .1rem; width: 100%; text-align: left; font: inherit; font-size: .8125rem; color: inherit; cursor: pointer; }
+.cc-hist-item:hover:not(:disabled) { background: var(--sheet-2); }
+.cc-hist-item:disabled { opacity: .55; cursor: default; }
+.cc-hist-kind { font-weight: 600; }
+.cc-hist-show { font-size: .875rem; display: flex; gap: .3rem; align-items: center; }
+@media (max-width: 760px) { .cc-hist { inset: auto; top: 3rem; left: .5rem; right: .5rem; width: auto; } .cc-hist-row { grid-template-columns: 1fr; } .cc-hist-acts { justify-content: flex-start; } }
+
+/* Dimension style manager (0.7 D7.14, dimstyle-ui.js) */
+.cc-dsdlg { width: min(40rem, calc(100vw - 2rem)); }
+.cc-ds-body { display: grid; gap: .6rem; padding: .75rem 1rem; max-height: 72vh; overflow: auto; }
+.cc-ds-list { list-style: none; margin: 0; padding: 0; border-top: var(--pen-1) solid var(--line); }
+.cc-ds-row { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .6rem; padding: .35rem .5rem; border-bottom: var(--pen-1) solid var(--line); cursor: pointer; }
+.cc-ds-row.is-sel { outline: var(--pen-2) solid var(--action); outline-offset: -2px; }
+.cc-ds-name { font-weight: 600; }
+.cc-ds-actions, .cc-ds-sub { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.cc-ds-sub[hidden] { display: none; }
+.cc-ds-diff { margin: 0; padding-left: 1.1rem; flex-basis: 100%; }
+.cc-dsmod { width: min(38rem, calc(100vw - 2rem)); }
+.cc-ds-form { padding: .5rem 1rem .75rem; max-height: 70vh; overflow: auto; }
+.cc-ds-form .cc-pgrid { padding-bottom: .5rem; }
+
+/* ---- Toolbar dock (0.7 D7.02; Settings › CadCraft › Toolbar position, TOOLBARDOCK). Top is how it always was; the rules below only
+   apply to the other sides, and only on a wide window (a phone keeps the shell's own top / bottom bar). The menu styles' bars live
+   inside .cc-tools, so they move with it: the CadCraft toolbar suits the sides best, a ribbon is meant for top or bottom. ---- */
+@media (min-width: 761px) {
+  .cc[data-toolbar-dock="bottom"] {
+    grid-template-rows: minmax(0, 1fr) auto auto auto;
+    grid-template-areas: "left stage right" "tools tools tools" "cmd cmd cmd" "status status status";
+  }
+  .cc[data-toolbar-dock="bottom"] .cc-tools { border-bottom: 0; border-top: var(--pen-2) solid var(--ink); }
+  .cc[data-toolbar-dock="left"] {
+    grid-template-columns: auto 15.5rem minmax(0, 1fr) 17.5rem;
+    grid-template-rows: minmax(0, 1fr) auto auto;
+    grid-template-areas: "tools left stage right" "cmd cmd cmd cmd" "status status status status";
+  }
+  .cc[data-toolbar-dock="right"] {
+    grid-template-columns: 15.5rem minmax(0, 1fr) 17.5rem auto;
+    grid-template-rows: minmax(0, 1fr) auto auto;
+    grid-template-areas: "left stage right tools" "cmd cmd cmd cmd" "status status status status";
+  }
+  .cc:is([data-toolbar-dock="left"], [data-toolbar-dock="right"])[data-toolbar-rows] .cc-tools {
+    display: flex; flex-direction: column; flex-wrap: nowrap; align-items: stretch; align-content: flex-start;
+    overflow-x: hidden; overflow-y: auto; max-width: 13rem; min-height: 0;
+    border-bottom: 0;
+  }
+  .cc[data-toolbar-dock="left"] .cc-tools { border-right: var(--pen-2) solid var(--ink); }
+  .cc[data-toolbar-dock="right"] .cc-tools { border-left: var(--pen-2) solid var(--ink); }
+  .cc:is([data-toolbar-dock="left"], [data-toolbar-dock="right"])[data-toolbar-rows] .cc-tools > .cc-tool-group { border-right: 0; border-bottom: var(--pen-1) solid var(--line); }
+  .cc:is([data-toolbar-dock="left"], [data-toolbar-dock="right"]) .cc-tool-row { flex-wrap: wrap; }
+  .cc:is([data-toolbar-dock="left"], [data-toolbar-dock="right"]) .cc-tools.cc-in-styled { max-width: 22rem; }
+}
+
+/* The first-drawing tour (0.7 D7.06, tour.js): a small box over the drawing, bottom right, out of the way of the command line. */
+.cc-hint-tour { margin: .5rem 0 0; }
+.cc-tour { position: absolute; right: .75rem; bottom: 4.5rem; z-index: 20; width: min(21rem, calc(100% - 1.5rem)); padding: .6rem .75rem .7rem; background: var(--sheet); color: var(--ink);
+  border: var(--pen-2) solid var(--action); border-radius: var(--radius); }
+.cc-tour.is-done { border-color: var(--layer-green, var(--action)); }
+.cc-tour-top { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+.cc-tour-n { font-size: .75rem; font-weight: 600; color: var(--ink-2); }
+.cc-tour-h { margin: .15rem 0 .25rem; font-weight: 700; font-size: 1rem; }
+.cc-tour-p { margin: 0 0 .5rem; font-size: .875rem; line-height: 1.45; }
+.cc-tour-foot { display: flex; flex-wrap: wrap; gap: .4rem; }
+.cc-tour-ok { color: var(--layer-green, var(--action)); }
+
+/* ---- Laser panel (0.7 SU.772, laser-cad.js over lib/laser's laser-panel.css): over the drawing's top right, the drawing stays live ---- */
+.cc-laserpanel { position: absolute; top: .5rem; right: .5rem; z-index: 6; width: min(42rem, calc(100% - 1rem)); max-height: calc(100% - 1rem); overflow: auto;
+  background: var(--sheet); color: var(--ink); border: var(--pen-1) solid var(--line); border-radius: var(--radius); padding: .5rem .65rem .6rem; }
+.cc-laserpanel[hidden] { display: none; }
+.cc-laserpanel .cc-align-head .cc-h { margin: 0; }
+.cc-laser-body .cc-note { font-size: .8125rem; margin: .25rem 0; }
+.cc-laser-block { margin: .6rem 0 0; padding-top: .5rem; border-top: var(--pen-1) solid var(--grid); }
+.cc-laser-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+.cc-laser-head h3 { font-size: .875rem; font-weight: 700; margin: 0; }
+.cc-laser-table { width: 100%; border-collapse: collapse; font-size: .8125rem; }
+.cc-laser-table th, .cc-laser-table td { padding: .2rem .3rem; border-top: var(--pen-1) solid var(--grid); text-align: left; vertical-align: middle; }
+.cc-laser-table .n { text-align: right; }
+html.cc-phone .cc-laserpanel { top: auto; bottom: .5rem; max-height: 70%; }
+
+/* ---- workspace layouts (0.7 WS.8; workspace-cadcraft.js on the shell's engine, assets/css/app-workspace.css): CadCraft's own parts inside
+   the blocks. Scope: a page with a layout on, or a panels window holding the palettes. ---- */
+.ws-stage > .cc-hint { top: calc(var(--ws-st, 0px) + var(--ws-vt, 0px) + 1rem); left: calc(var(--ws-sl, 0px) + 1rem); }
+.ws-stage > .cc-doctabs { top: calc(var(--ws-st, 0px) + var(--ws-vt, 0px)); left: var(--ws-sl, 0px); right: var(--ws-sr, 0px); }
+body.ws-on .ws-stage.has-doctabs > .cc-canvases.ws-fill { top: calc(var(--ws-st, 0px) + var(--ws-vt, 0px) + var(--cc-tabs-h)) !important; }
+.tbx-info .cc-toggles, .ws-ribbon-box .cc-toggles { display: flex; flex-wrap: wrap; gap: .2rem; }
+.tbx-info .cc-ws-layer { min-width: 7rem; max-width: 14rem; }
+.tbx-quick [data-coords] { font-variant-numeric: tabular-nums; padding: 0 .5rem; }
+.ws-statusbar .cc-status { display: flex; flex: 1 1 auto; min-width: 0; border: 0; background: transparent; padding: 0 .5rem; gap: .75rem; }
+.cc-ws-props > .cc-sec { border: 0; }
+.cc-ws-browser { padding: .25rem .4rem; }
+.cc-ws-pb { margin: 0 0 .35rem; }
+.cc-ws-pb > summary { font-weight: 600; padding: .15rem 0; cursor: pointer; }
+.cc-ws-pb ul { list-style: none; margin: .1rem 0 .25rem; padding: 0 0 0 .75rem; }
+.cc-ws-pb li { display: flex; align-items: center; gap: .35rem; min-width: 0; }
+.cc-ws-pb .cc-ws-pb-go { flex: 1 1 auto; min-width: 0; text-align: left; overflow-wrap: anywhere; border-color: transparent; background: transparent; }
+.cc-ws-pb .cc-ws-pb-go[aria-current="page"] { font-weight: 700; }
+.cc-ws-pb .cc-muted { flex: 0 0 auto; white-space: nowrap; }
+.cc-ws-pb-actions { display: flex; flex-wrap: wrap; gap: .2rem; margin: .1rem 0 .25rem .75rem; }
+.cc-ws-pb-empty { margin: .1rem 0 .25rem .75rem; color: var(--ink-2); }
+/* the info box keeps one height while commands start and end (the drawing under it must not move: a zoom stays where it was put); the
+   selection note's one line is the engine's (app-workspace.css .tbx-sel) */
+.tbx-info .tbx-ig-tool .tbx-ig-body { min-height: 2.75rem; align-content: flex-start; }
+
+/* Tabs inside a dialog (the Library's sources: LibraryCraft, Files…, Standard, Other feeds) are a choice, not sheet tabs: a size a hand can
+   hit (owner 2026-10-24, dialog audit: they were 22 px tall; tools/workspace-test/dialog-audit.mjs) */
+dialog .cc-tablist .cc-tab { min-height: 2.25rem; padding: .45rem .9rem .35rem; font-size: .875rem; }

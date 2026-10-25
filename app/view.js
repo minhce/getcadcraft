@@ -28,6 +28,7 @@ import {
   UNBOUNDED, clipInfinite,
 } from './geom.js';
 import { resolveColor } from './doc.js';
+import { fillRichLine } from './mtext-draw.js';
 import { resolveLw } from './linetypes.js';
 import { walk, frozenSet, frozenKey } from './walk.js';
 import { leaderGeometry } from './leader.js';
@@ -41,6 +42,8 @@ const SNAP_PRIORITY = { end: 0, int: 0, mid: 1, cen: 1, quad: 2, node: 0, ins: 1
 export const CURSOR_SIZES = { small: { arm: 20, box: 7, pick: 5 }, medium: { arm: 40, box: 9, pick: 6 }, large: { arm: 90, box: 13, pick: 8 } };
 /** Drawing text: a Helvetica-metric face, the same one plotted PDFs use. */
 export const DRAWING_FONT = 'Helvetica, Arial, "Liberation Sans", sans-serif';
+/** The History compare's mark colours (history-ui.js's legend uses the same ones, cadcraft.css). */
+export const COMPARE_COLORS = { added: '#1a9850', removed: '#d73027', changed: '#e08a00' };
 
 export class View {
   constructor(base, over, doc) {
@@ -589,6 +592,7 @@ export class View {
         for (const a of ps[i]) for (const b of ps[j]) for (const x of intersect(a, b)) consider({ kind: 'int', x: x.x, y: x.y });
       }
     }
+    if (this.snapUnder) for (const c of this.snapUnder(p, r, kinds) || []) consider(c);   // a PDF underlay's own lines (0.7 D7.24)
     if (kinds.has('node') && this.snapExtra) { const c = this.snapExtra(p, r); if (c) consider(c); }   // a point cloud's points (SG.1)
     return best;
   }
@@ -597,6 +601,26 @@ export class View {
   invalidate(base = false) {
     if (base) this.dirtyBase = true;
     if (!this.raf) this.raf = requestAnimationFrame(() => { this.raf = 0; this.render(); });
+  }
+
+  /**
+   * REGEN / REGENALL (0.7 CAD-REGEN): throw the drawn pictures away and rebuild them from the drawing. `all` = every space
+   * of every open drawing and every pane; else the open space (and, on a sheet, the model its viewports show).
+   * → how many spaces were rebuilt.
+   */
+  regen(all = false) {
+    let n = 1;
+    if (all) {
+      n = 1 + this.doc.layouts.length;
+      this.caches = new WeakMap(); this.frzCaches = new WeakMap(); this.paneShots = new WeakMap();
+    } else {
+      this.caches.delete(this.doc.space);
+      this.frzCaches?.delete(this.doc.space);
+      if (this.doc.layout) { this.caches.delete(this.doc.model); this.frzCaches?.delete(this.doc.model); n = 2; }
+      this.paneShots = new WeakMap();
+    }
+    this.invalidate(true);
+    return n;
   }
 
   /** CSS px per paper mm on the open sheet (viewports included), 0 in the model. */
@@ -624,7 +648,7 @@ export class View {
     const hit = fk ? null : this.caches.get(map);
     if (hit && hit.version === v) return hit;
     const t0 = performance.now();
-    const paths = new Map(), fills = new Map(), texts = [], points = [], viewports = [], bounds = new Map(), pictures = [], masks = [];
+    const paths = new Map(), fills = new Map(), texts = [], points = [], viewports = [], bounds = new Map(), pictures = [], pdfs = [], masks = [];
     const ext = emptyBounds();
     for (const e of map.values()) {
       const b = entityBounds(e, this.doc.blocks);
@@ -640,8 +664,9 @@ export class View {
       let p = paths.get(k); if (!p) { p = { path: new Path2D(), color: c, lw: w, alpha: a }; paths.set(k, p); } return p.path;
     };
     const fillFor = (c, solid, o = null) => {
-      const a = alphaOf(o), wipe = !!o?.wipe, k = c + (solid ? '' : '~') + '|' + a + (wipe ? '|w' : '');
-      let p = fills.get(k); if (!p) { p = { path: new Path2D(), color: c, solid, alpha: a, wipe }; fills.set(k, p); } return p;
+      // nz: rings that add up (a wide polyline's bands, walk.js polyBands) — filled nonzero, so where they overlap nothing cancels
+      const a = alphaOf(o), wipe = !!o?.wipe, nz = !!o?.nz, k = c + (solid ? '' : '~') + '|' + a + (wipe ? '|w' : '') + (nz ? '|nz' : '');
+      let p = fills.get(k); if (!p) { p = { path: new Path2D(), color: c, solid, alpha: a, wipe, nz }; fills.set(k, p); } return p;
     };
     const ring = (path, l) => { path.moveTo(l[0] - origin.x, l[1] - origin.y); for (let i = 2; i + 1 < l.length; i += 2) path.lineTo(l[i] - origin.x, l[i + 1] - origin.y); };
     // construction lines (DR.6) never go into the cached paths: drawCache clips each one to the screen every time
@@ -677,10 +702,11 @@ export class View {
       text(color, e, o) { texts.push({ e, color, alpha: alphaOf(o) }); },
       point(color, x, y) { points.push({ x, y, color }); },
       viewport(e) { viewports.push(e); },
-      picture(p) { pictures.push(p); },   // WL.14 (cad-files' pictures.js): drawn under the linework
+      picture(p) { pictures.push(p); },
+      pdf(p) { pdfs.push(p); },   // 0.7 D7.24 (pdfunder.js): a PDF page under the linework, drawn by view.pdfPaint   // WL.14 (cad-files' pictures.js): drawn under the linework
       mask(color, loop, o) { masks.push({ color, loop, wipe: !!o?.wipe }); },   // WL.8: a text's background, over the lines and under the text
     }, { frozen });
-    const cache = { version: v, origin, paths: [...paths.values()], fills: [...fills.values()], texts, points, viewports, rays, pictures, masks, bounds, ms: performance.now() - t0 };
+    const cache = { version: v, origin, paths: [...paths.values()], fills: [...fills.values()], texts, points, viewports, rays, pictures, pdfs, masks, bounds, ms: performance.now() - t0 };
     if (fk) byKey.caches.set(fk, cache); else this.caches.set(map, cache);
     return cache;
   }
@@ -780,6 +806,7 @@ export class View {
   /** Stroke and fill a cache through T (world → CSS px). */
   drawCache(ctx, cache, T) {
     const d = this.dpr, o = cache.origin, k = Math.hypot(T[0], T[1]);
+    if (cache.pdfs?.length && this.pdfPaint) this.pdfPaint(ctx, cache.pdfs, T, { dpr: d, ox: this.x0, oy: this.y0, zoom: k, onReady: () => this.invalidate(true) });
     if (cache.pictures?.length) drawPictures(ctx, cache.pictures, T, { doc: this.doc, dpr: d, ox: this.x0, oy: this.y0, onReady: () => this.invalidate(true) });
     ctx.setTransform(d * T[0], d * T[1], d * T[2], d * T[3], d * (T[0] * o.x + T[2] * o.y + T[4] + this.x0), d * (T[1] * o.x + T[3] * o.y + T[5] + this.y0));
     ctx.lineWidth = 1 / k;
@@ -787,7 +814,7 @@ export class View {
     for (const f of cache.fills) {
       ctx.fillStyle = f.wipe ? this.colors.bg : this.ink(f.color);
       ctx.globalAlpha = (f.wipe ? 1 : f.solid ? 0.85 : 0.18) * (f.alpha ?? 1);
-      ctx.fill(f.path, 'evenodd');
+      ctx.fill(f.path, f.nz ? 'nonzero' : 'evenodd');
     }
     ctx.globalAlpha = 1;
     for (const p of cache.paths) {
@@ -843,7 +870,8 @@ export class View {
       ctx.font = (hpx * FONT_EM).toFixed(2) + 'px ' + DRAWING_FONT;
       ctx.textBaseline = 'alphabetic';
       ctx.textAlign = e.ha === 'center' ? 'center' : e.ha === 'right' ? 'right' : 'left';
-      lay.lines.forEach((line, i) => ctx.fillText(line, 0, -lay.baselines[i] * k));
+      if (lay.runs) lay.lines.forEach((_, i) => fillRichLine(ctx, lay, i, e, { scale: k, family: DRAWING_FONT, color, paint: (c) => this.ink(c) }));   // inline format codes (mtext.js)
+      else lay.lines.forEach((line, i) => ctx.fillText(line, 0, -lay.baselines[i] * k));
     }
     ctx.globalAlpha = 1;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -920,6 +948,29 @@ export class View {
     if (e.type === 'point') { const s = this.toScreen(e.x, e.y); ctx.moveTo(s.x - 4, s.y - 4); ctx.lineTo(s.x + 4, s.y + 4); ctx.moveTo(s.x - 4, s.y + 4); ctx.lineTo(s.x + 4, s.y - 4); }
   }
 
+  /** The History compare's colours on the drawing: removed (red), added (green), changed (orange: the old shape dashed, the new solid). */
+  drawCompareMarks(ctx, d) {
+    const m = this.compareMarks.get(this.doc.layout ? this.doc.layout.name : '');
+    if (!m) return;
+    ctx.save();
+    const trace = (list, color, dash, w) => {
+      if (!list.length) return;
+      ctx.beginPath();
+      for (const q of list) {
+        if (q.k === 'L') { const a = this.toScreen(q.x1, q.y1), b = this.toScreen(q.x2, q.y2); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); }
+        else { const c = this.toScreen(q.cx, q.cy), s = this.toScreen(q.cx + q.r * Math.cos(q.a0), q.cy + q.r * Math.sin(q.a0)); ctx.moveTo(s.x, s.y); ctx.arc(c.x, c.y, q.r * this.zoom, -q.a0 + this.tw, -q.a1 + this.tw, true); }
+      }
+      ctx.strokeStyle = this.colors.bg; ctx.lineWidth = w + 2; ctx.setLineDash([]); ctx.globalAlpha = 0.55; ctx.stroke();   // a light edge so it reads on any drawing
+      ctx.strokeStyle = color; ctx.lineWidth = w; ctx.setLineDash(dash); ctx.globalAlpha = 1; ctx.stroke();
+    };
+    trace(m.oldChanged, COMPARE_COLORS.changed, [6, 4], 2);
+    trace(m.removed, COMPARE_COLORS.removed, [], 2.5);
+    trace(m.added, COMPARE_COLORS.added, [], 2.5);
+    trace(m.newChanged, COMPARE_COLORS.changed, [], 2.5);
+    ctx.restore();
+    ctx.setTransform(d, 0, 0, d, d * this.x0, d * this.y0);
+  }
+
   renderOver() {
     const ctx = this.octx;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -961,6 +1012,7 @@ export class View {
   overInside(ctx, full, st, d) {
 
     // constraints: bars and dimensional constraints (gview.js, set by params-panel.js)
+    if (full && this.compareMarks) this.drawCompareMarks(ctx, d);   // what the History compare found (history-ui.js, 0.7 D7.31)
     if (full && this.extraOverlay) { try { this.extraOverlay(ctx, this); } catch (err) { console.error(err); } ctx.setTransform(d, 0, 0, d, d * this.x0, d * this.y0); ctx.globalAlpha = 1; ctx.setLineDash([]); }
 
     // hover

@@ -11,13 +11,18 @@
  * Saving goes out as DXF (dxf.js) — writing DWG is not built yet.
  */
 
-import { TAU, normAngle, dist } from './geom.js';
-import { mtextPlain } from './dxf.js';
+import { cleanScales } from './scales.js';
+import { TAU, normAngle, dist, vpModelCentre } from './geom.js';
+import { mtextPlain, mtextRich } from './dxf.js';
+import { fromFile as splineFromFile } from './spline.js';
+import { unescapeText } from './dxf-decode.js';
 import { attdef, resolveAttribs } from './attrs.js';
 import { DIM_DEFAULTS } from './dims.js';
 import { matchPaper } from './sheets.js';
 import { tagFromXdata, parametricText, isParamBlock } from './gcons.js';
 import { isStyleBlock, payloadFrom } from './plotstyle.js';
+import { laserFromPayload, isLaserBlock } from './laser-file.js';   // 0.7 SU.772: the Laser panel's settings, block CADCRAFT_LASER
+import { underlayParts } from './pdfmodel.js';   // PDF underlays (0.7 D7.24)
 import { isGeoBlock, geoFromPayload, readGeo } from './geodwg.js';   // 0.6 GEO-DWG
 import { face3dFromDwg, read3dFromDwg } from './model3d.js';
 import { t } from './i18n.js';
@@ -27,6 +32,8 @@ import { dynBlockFromDwg, dynRefFromDwg, dynSource } from './dyn-blocks.js';   /
 import { pictureBlock } from './pictures.js';   // 0.5 WL.14
 import { clipFromFilter } from './xclip.js';   // 0.5 WL.16
 import { planMatrix, toPlan, isFlipped } from './ocs.js';   // 0.6 DF.1: objects in their own coordinate system
+import { keepFrom } from './dwg-keep.js';   // 0.6.1: SPLINE / MULTILEADER kept for Save
+import { keptFromDwg, SOLID_TYPES } from './acis-cad.js';   // 0.7 D7.25: other programs' 3D solids, kept
 
 export const VERSIONS = {
   AC1009: 'R12', AC1012: 'R13', AC1014: 'R14', AC1015: '2000', AC1018: '2004',
@@ -99,8 +106,12 @@ export function importDwg(db, { versionTag = '' } = {}) {
     lunitOk(st);
     return st;
   };
-  const dimStyle = styleFrom(H, DIM_DEFAULTS);
-  const dimStyles = new Map((db.tables?.dimstyles || []).map((d) => [String(d.name).toUpperCase(), styleFrom(d.vars || {}, dimStyle)]));
+  const hdrStyle = styleFrom(H, DIM_DEFAULTS);
+  const dimStyles = new Map((db.tables?.dimstyles || []).map((d) => [String(d.name).toUpperCase(), styleFrom(d.vars || {}, hdrStyle)]));
+  // the settings for new dimensions: the header's (the current style, as the other program left it) — but in a file CadCraft wrote the
+  // header holds no dimension settings, and its Standard style is what was current or parked (dimstyles.js, 0.7 D7.14)
+  const ours = (db.tables?.appids || []).some((a) => /^cadcraft$/i.test(a.name || ''));
+  const dimStyle = ours && dimStyles.get('STANDARD') ? { ...dimStyles.get('STANDARD') } : hdrStyle;
   for (const d of db.tables?.dimstyles || []) { const st = dimStyles.get(String(d.name).toUpperCase()); const tx = d.vars?.DIMTXSTY_NAME; if (st && tx && !/^standard$/i.test(tx)) st.txsty = String(tx); }
   // the drawing's named dimension and text styles (Properties lists them; doc.dimStyles / doc.textStyles)
   const namedDimStyles = (db.tables?.dimstyles || []).filter((d) => d.name && !/^standard$/i.test(d.name) && !(d.flags & 16)).map((d) => [String(d.name), dimStyles.get(String(d.name).toUpperCase())]);
@@ -110,19 +121,25 @@ export function importDwg(db, { versionTag = '' } = {}) {
   // model space and every sheet are blocks too (*Model_Space, *Paper_Space…), in file order
   const blockList = db.blocks || [];
   const model = blockList.find((b) => /^\*model_space$/i.test(b.name));
+  // OLE objects in model space (0.7 D7.23): their data is kept and written back; where they sit is inside that data (not read yet, ole.js)
+  const oleKept = (model?.entities || []).filter((e) => (e.type === 'OLE2FRAME' || e.type === 'OLEFRAME') && typeof e.data === 'string' && e.data).slice(0, 500)
+    .map((e) => ({ layer: e.layer || '0', flags: e.flags | 0, mode: e.mode | 0, data: e.data }));
   const blocks = [];
   let anonN = 0;   // *L (multileaders drawn as parts) and *I (picture frames) blocks made here
   const taken = new Set(blockList.map((b) => String(b.name).toUpperCase()));
   const freeName = (pre) => { let n; do n = pre + (++anonN); while (taken.has(n.toUpperCase())); taken.add(n.toUpperCase()); return n; };
+  const pdfDefs = new Map((db.objects || []).filter((o) => o.type === 'PDFDEFINITION').map((o) => [o.handle, o]));
   const imageDefs = new Map((db.objects || []).filter((o) => o.type === 'IMAGEDEF').map((o) => [o.handle, o]));
   const objByH = new Map((db.objects || []).map((o) => [String(o.handle), o]));   // dictionaries and filters by handle (WL.16)
   let parametric = null;   // CadCraft's constraints (gcons.js): block CADCRAFT_PARAMETRIC
   let plotStyles = null;   // CadCraft's plot style tables: block CADCRAFT_PLOTSTYLES
+  let laser = null;   // the Laser panel's settings: block CADCRAFT_LASER (laser-file.js, 0.7 SU.772)
   let geoOwn = null;   // CadCraft's coordinate system and map layers: block CADCRAFT_GEO (geodwg.js)
   for (const b of blockList) {
     if (/^\*(model|paper)_space/i.test(b.name)) continue;
     if (isParamBlock(b.name)) { parametric = parametricText((b.entities || []).map(convert).filter(Boolean)); continue; }
     if (isStyleBlock(b.name)) { plotStyles = payloadFrom((b.entities || []).map((e) => ({ cc: xdataOf(e.xdata, 'CADCRAFT').map(([, v]) => v) }))); continue; }   // plot style tables (0.6 DC.14, plotstyle.js)
+    if (isLaserBlock(b.name)) { laser = laserFromPayload((b.entities || []).map((e) => ({ cc: xdataOf(e.xdata, 'CADCRAFT').map(([, v]) => v) }))); continue; }   // 0.7 SU.772
     if (isGeoBlock(b.name)) { geoOwn = geoFromPayload((b.entities || []).map((e) => ({ cc: xdataOf(e.xdata, 'CADCRAFT').map(([, v]) => v) }))); continue; }   // 0.6 GEO-DWG
     // a dynamic block (definition or a reference's copy) keeps its hidden entities too (dyn-blocks.js, 0.5 DB.2)
     const dynB = dynBlockFromDwg(b, { convert, attdefOf, defName: b.dynamicOf ? blockList.find((x) => x.record === b.dynamicOf)?.name : null,
@@ -145,12 +162,25 @@ export function importDwg(db, { versionTag = '' } = {}) {
   }
 
   const entities = [];
+  // other programs' 3D solids in model space (0.7 D7.25, acis-cad.js): kept as they came for the 3D tab and Save, not 2D objects
+  const solidsKept = keptFromDwg(model?.entities, color);
   for (const e of model?.entities || []) {
+    if (SOLID_TYPES.has(e.type) && e.acis) continue;
     const c = convert(e);
     if (c) { entities.push(...[].concat(c)); report.read++; }
   }
-  const layoutObjs = (db.layouts || []).filter((l) => !/^model$/i.test(l.name || '') && l.block);
-  const paperOf = new Map(layoutObjs.map((l) => [l.block, []]));
+  const solidsInBlocks = blockList.filter((b) => b !== model && !/^\*paper_space/i.test(b.name)).reduce((n, b) => n + (b.entities || []).filter((e) => SOLID_TYPES.has(e.type)).length, 0);
+  // a layout whose block link is missing (D7.18) is kept: its paper space is the unclaimed *Paper_Space block, else it is empty and said so
+  const allLayouts = (db.layouts || []).filter((l) => !/^model$/i.test(l.name || ''));
+  const claimed = new Set(allLayouts.filter((l) => l.block).map((l) => l.block));
+  const spare = blockList.filter((b) => /^\*paper_space\d*$/i.test(b.name || '') && b.record && !claimed.has(b.record));
+  let unlinked = 0;
+  const layoutObjs = allLayouts.map((l) => {
+    if (l.block) return l;
+    unlinked++;
+    return { ...l, block: spare.shift()?.record };
+  });
+  const paperOf = new Map(layoutObjs.map((l) => [l.block || l, []]));
   for (const b of blockList) {
     const list = paperOf.get(b.record);
     if (!list || b === model) continue;
@@ -169,15 +199,16 @@ export function importDwg(db, { versionTag = '' } = {}) {
   if (report.xrefs) report.notes.push(t('dwg.read.xrefs', { n: report.xrefs }));
   if (report.mleaderBlocks) report.notes.push(t('dwg.read.mleaderblocks', { n: report.mleaderBlocks }));
   if (report.wipeouts) report.notes.push(t('dwg.read.wipeouts', { n: report.wipeouts }));
+  if (report.pdfs) report.notes.push(t('dwg.read.pdfs', { n: report.pdfs }));
   if (report.images) report.notes.push(t('dwg.read.images', { n: report.images }));
   if (report.dimBlocks) report.notes.push(t('dwg.read.dimblocks', { n: report.dimBlocks }));
 
   // layouts, in tab order; the first viewport of each is the sheet itself
   const inches = H.MEASUREMENT === 0 || (H.MEASUREMENT === undefined && [1, 2, 3, 8, 9, 10].includes(H.INSUNITS));
   const layouts = layoutObjs.slice().sort((a, b) => (a.tabOrder ?? 0) - (b.tabOrder ?? 0)).map((l) => {
-    let list = paperOf.get(l.block) || [];
+    let list = paperOf.get(l.block || l) || [];
     if (list.some((e) => e._attribs)) resolveAttribs([list], new Map(blocks.map((b) => [b.name, b])));
-    const firstVp = list.find((e) => e.type === 'viewport');
+    const firstVp = sheetViewport(list);   // the sheet's own viewport (D7.18); a real viewport is never taken for it
     list = list.filter((e) => e !== firstVp);
     const mn = l.limits?.min || { x: 0, y: 0 }, mx = l.limits?.max || { x: 0, y: 0 };
     let paper = { unit: inches ? 'in' : 'mm', x0: mn.x, y0: mn.y, w: mx.x - mn.x, h: mx.y - mn.y };
@@ -191,15 +222,19 @@ export function importDwg(db, { versionTag = '' } = {}) {
     return { name: l.name || 'Layout', paper, entities: list, ...(ss ? { plotStyle: ss.slice(0, 64) } : {}) };
   });
   if (layouts.length) report.layouts = layouts.length;
+  if (oleKept.length) report.notes.push(t('dwg.read.ole', { n: oleKept.length }));
+  if (solidsKept.length) report.notes.push(t('ccacis.app.kept', { n: solidsKept.length }));
+  if (solidsInBlocks) report.notes.push(t('ccacis.app.blocks', { n: solidsInBlocks }));
+  if (unlinked) report.notes.push(t('dwg.read.layouts_nolink', { n: unlinked }));
 
   return read3dFromDwg(db, {   // + CadCraft's 3D model from block CADCRAFT_3D (model3d.js)
-    entities, layers, blocks, layouts, dimStyle, ...(parametric ? { parametric } : {}),
+    entities, layers, blocks, layouts, dimStyle, ...(parametric ? { parametric } : {}), ...(laser ? { laser } : {}),
     // plot styles: CadCraft's own block, else the table the Model page setup names (another program's "x.ctb")
     ...(plotStyles ? { plotStyles } : modelStyleSheet(db) ? { plotStyles: { tables: [], model: modelStyleSheet(db) } } : {}),
-    linetypes, ...(geoRead.geo ? { geo: geoRead.geo } : {}),
+    linetypes, ...(geoRead.geo ? { geo: geoRead.geo } : {}), ...(oleKept.length ? { ole: oleKept } : {}), ...(solidsKept.length ? { solids: solidsKept } : {}),
     meta: { version: versionTag, release: VERSIONS[versionTag] || '', units: UNITS[H.INSUNITS] || '', ...(H.INSBASE && Number.isFinite(H.INSBASE.x) ? { insbase: { x: H.INSBASE.x, y: H.INSBASE.y || 0 } } : {}),
       ...(H.LTSCALE > 0 && H.LTSCALE !== 1 ? { ltscale: H.LTSCALE } : {}),
-      ...lengthFormat(H) },
+      ...lengthFormat(H), ...scalesFrom(db) },
     views: namedViews(db.tables?.views, layouts),
     vports: splitScreen(db.tables?.vports),
     ...ucsFrom(H, db.tables?.ucs, db.tables?.vports),   // DR.8: the current and named UCSs, the active view's twist
@@ -255,6 +290,7 @@ export function importDwg(db, { versionTag = '' } = {}) {
     const out = { ...d, text, st };
     if (e.style && !/^standard$/i.test(e.style)) out.dimstyle = String(e.style);
     if (Number.isFinite(e.textRotation) && Math.abs(e.textRotation) > 1e-12) out.trot = normAngle(e.textRotation);
+    if ((t === 0 || t === 1) && Number.isFinite(e.obliqueAngle) && Math.abs(e.obliqueAngle) > 1e-9) out.obl = normAngle(e.obliqueAngle);   // slanted extension lines (DIMEDIT Oblique, 0.7 D7.14)
     return out;
   }
 
@@ -343,6 +379,20 @@ export function importDwg(db, { versionTag = '' } = {}) {
     return { type: 'insert', ...base, block: name, x: 0, y: 0, sx: 1, sy: 1, rot: 0 };
   }
 
+  /**
+   * 0.7 D7.24: a PDFUNDERLAY → a reference to an underlay block (pdfmodel.js): the frame of the page (A4 until the PDF is given:
+   * the file does not say how big the page is) with the clip, and the file's name. The PDF itself is not in the DWG.
+   */
+  function pdfUnderlay(e, base) {
+    if (!e.insertion || !e.scale || !Number.isFinite(e.insertion.x) || !Number.isFinite(e.insertion.y)) { skip(e.type); return null; }
+    const def = pdfDefs.get(e.definition);
+    const name = freeName('*P');
+    const { block, insert } = underlayParts({ file: def?.file, page: def?.page, insertion: e.insertion, scale: { x: e.scale.x || 1, y: e.scale.y || e.scale.x || 1 }, rotation: e.rotation, flags: e.flags, contrast: e.contrast, fade: e.fade, clip: e.clip }, name);
+    blocks.push(block);
+    report.pdfs = (report.pdfs || 0) + 1;
+    return { ...insert, ...base };
+  }
+
   /** An object's own linetype, lineweight and linetype scale (absent = by layer, as CadCraft keeps them). */
   function styleOf(e) {
     const o = {};
@@ -381,6 +431,10 @@ export function importDwg(db, { versionTag = '' } = {}) {
   function convert(e) {
     const c = withProps(tagFromXdata(inPlan(convertBase(e), e), e.xdata), e);
     const one = Array.isArray(c) ? c[0] : c;
+    if (one && (e.type === 'SPLINE' || e.type === 'MULTILEADER' || e.type === 'MLEADER')) {   // 0.6.1: saved back as it came unless edited (dwg-keep.js)
+      const k = keepFrom(e, db, one);
+      if (k) one._dwg = k;
+    }
     if (e.type === 'INSERT' && e.dyn && one && one.type === 'insert') { const d = dynRefFromDwg(e); if (d) one.dyn = d; }   // a dynamic block reference (0.5 DB.2)
     if (e.type === 'INSERT' && e.extDict && one && one.type === 'insert') {   // XCLIP (0.5 WL.16): xdict → ACAD_FILTER → SPATIAL
       const f = objByH.get(String(objByH.get(String(objByH.get(String(e.extDict))?.entries?.ACAD_FILTER))?.entries?.SPATIAL));
@@ -433,25 +487,32 @@ export function importDwg(db, { versionTag = '' } = {}) {
       case 'CIRCLE': return { type: 'circle', ...base, cx: e.center.x, cy: e.center.y, r: e.radius };
       case 'ARC': return { type: 'arc', ...base, cx: e.center.x, cy: e.center.y, r: e.radius, a0: normAngle(e.startAngle), a1: normAngle(e.endAngle) };
       case 'LWPOLYLINE': case 'POLYLINE_2D': {
-        const vs = (e.vertices || []).filter((v) => !(v.flags & 16));   // 16 = a spline frame's control point
+        // 16 = a spline frame's control point; a vertex without a usable place (a damaged file) is left out
+        const vs = (e.vertices || []).filter((v) => !(v.flags & 16) && Number.isFinite(v.x) && Number.isFinite(v.y));
         if (vs.length < 2) return null;
-        // widths (P.7): one for the whole polyline, or each segment's start / end
-        const cw = e.constantWidth > 0 ? e.constantWidth : 0;
-        const each = !cw && vs.some((v) => v.startWidth > 0 || v.endWidth > 0);
+        // widths (P.7): each segment's start / end when any vertex has one (the DXF reference: a constant width is not
+        // used when variable widths are set), else one for the whole polyline
+        const each = vs.some((v) => v.startWidth > 0 || v.endWidth > 0);
+        const cw = !each && e.constantWidth > 0 ? e.constantWidth : 0;
         const wd = (x) => (Number.isFinite(x) && x > 0 ? x : 0);
-        return { type: 'poly', ...base, closed: !!e.closed, ...(cw ? { w: cw } : {}),
-          pts: vs.map((v) => ({ x: v.x, y: v.y, b: v.bulge || 0, ...(each ? { sw: wd(v.startWidth), ew: wd(v.endWidth) } : {}) })) };
+        // linetype generation (PLINEGEN): off = the pattern starts again at every vertex, as other programs draw it
+        const gen = e.type === 'LWPOLYLINE' ? !!e.plinegen : !!((e.flags | 0) & 128);
+        return { type: 'poly', ...base, closed: !!e.closed, ...(cw ? { w: cw } : {}), ...(gen ? {} : { lgen: false }),
+          pts: vs.map((v) => ({ x: v.x, y: v.y, b: Number.isFinite(v.bulge) ? v.bulge : 0, ...(each ? { sw: wd(v.startWidth), ew: wd(v.endWidth) } : {}) })) };
       }
       case 'POLYLINE_3D': {
-        const vs = (e.vertices || []).filter((v) => !(v.flags & 16));
+        const vs = (e.vertices || []).filter((v) => !(v.flags & 16) && Number.isFinite(v.x) && Number.isFinite(v.y));
         return vs.length >= 2 ? { type: 'poly', ...base, closed: !!e.closed, pts: vs.map((v) => ({ x: v.x, y: v.y, b: 0 })) } : null;
       }
       case 'ELLIPSE': return { type: 'ellipse', ...base, cx: e.center.x, cy: e.center.y, mx: e.majorAxis.x, my: e.majorAxis.y, ratio: e.ratio || 1, t0: e.startParam ?? 0, t1: e.endParam ?? TAU };
-      case 'SPLINE': {
-        const pts = splinePoints(e);
-        if (pts.length < 2) { skip('SPLINE'); return null; }
+      case 'SPLINE': {   // a real spline (0.7 D7.10, spline.js); one not edited since it was opened is still written back as it came (dwg-keep.js)
+        const hasCtrl = e.control && e.control.length;
+        const sp = splineFromFile({ degree: e.degree, closed: !!e.closed || !!((e.flags | 0) & 1), periodic: !!e.periodic, ctrl: hasCtrl ? e.control : e.approxControl,
+          weights: hasCtrl && e.weights ? e.weights : (hasCtrl && e.control.some((p) => Number.isFinite(p.w)) ? e.control.map((p) => (Number.isFinite(p.w) ? p.w : 1)) : null),
+          knots: hasCtrl ? e.knots : e.approxKnots, fit: e.fit, st: e.startTangent, et: e.endTangent });
+        if (!sp) { skip('SPLINE'); return null; }
         report.splines++;
-        return { type: 'poly', ...base, closed: false, pts: pts.map((p) => ({ x: p.x, y: p.y, b: 0 })) };
+        return { ...sp, ...base };
       }
       case 'TEXT': case 'ATTRIB': {
         const t = textOf(e, base);
@@ -459,15 +520,16 @@ export function importDwg(db, { versionTag = '' } = {}) {
         return t && t.s.trim() ? t : null;
       }
       case 'MTEXT': {
-        const s = mtextPlain(String(e.value || ''));
-        if (!s || !e.height) return null;
+        const rich = mtextRich(String(e.value || ''));   // codes kept as `mt` (mtext.js, 0.7 D7.17)
+        const s = rich ? rich.s : mtextPlain(String(e.value || ''));
+        if (!s.trim() || !e.height) return null;
         const rot = e.xAxis && (e.xAxis.x || e.xAxis.y) ? Math.atan2(e.xAxis.y, e.xAxis.x) : 0;
         const ap = (e.attach || 1) - 1;
         const ww = e.width > 0 ? e.width : 0, ls = e.lineSpacing > 0 && e.lineSpacing !== 1 ? e.lineSpacing : 0;
         const q = /^\\Q(-?[\d.]+);/.exec(String(e.value || ''));   // an oblique angle as the text's first format code (how CadCraft writes it)
         const obl = q && Number.isFinite(+q[1]) && +q[1] ? +q[1] * Math.PI / 180 : 0;
         return { type: 'text', ...base, x: e.insert.x, y: e.insert.y, h: e.height, rot: normAngle(rot), s, ha: ['left', 'center', 'right'][ap % 3], va: ['top', 'middle', 'bottom'][Math.floor(ap / 3)], ...(ww ? { ww } : {}), ...(ls ? { ls } : {}),
-          ...styleName(e.style), ...(obl ? { obl } : {}), ...maskOf(e) };
+          ...styleName(e.style), ...(obl ? { obl } : {}), ...(rich ? { mt: rich.mt } : {}), ...maskOf(e) };
       }
       case 'SOLID': case 'TRACE': {
         const p = e.points || [];   // DXF order: the outline runs 1, 2, 4, 3
@@ -504,12 +566,15 @@ export function importDwg(db, { versionTag = '' } = {}) {
         }
         // attribute values go on the (first) reference; resolveAttribs places them on its block
         out[0]._attribs = [];
-        for (const a of e.attribs || []) { if (a.invisible) continue; const t = convert({ ...a, type: 'ATTRIB' }); if (t) out[0]._attribs.push(t); }
+        // a dynamic reference's attributes its visibility state hides are flagged invisible (the object's own flag) and keep
+        // their value: read them too, the block's state decides what shows (0.6.1 FIX-061-DYN-ATTRS; geom.attdefHidden)
+        for (const a of e.attribs || []) { if (a.invisible && !e.dyn) continue; const t = convert({ ...a, invisible: false, type: 'ATTRIB' }); if (t) out[0]._attribs.push(t); }
         return out;
       }
       case '3DFACE': return face3dFromDwg(e, base);   // the 3D tab's faces (model3d.js), never a 2D object
       case 'MULTILEADER': return extra(multileader(e, base));
       case 'IMAGE': case 'WIPEOUT': return extra(picture(e, base));
+      case 'PDFUNDERLAY': return pdfUnderlay(e, base);
       case 'MLINE': {
         const vs = (e.vertices || []).map((v) => v.point).filter((v) => v && Number.isFinite(v.x));
         return vs.length >= 2 ? { type: 'poly', ...base, closed: !!e.closed, pts: vs.map((v) => ({ x: v.x, y: v.y, b: 0 })) } : null;
@@ -536,7 +601,8 @@ export function importDwg(db, { versionTag = '' } = {}) {
         const c = e.center, t = e.viewTarget || { x: 0, y: 0 }, dc = e.viewCenter || c;
         if (!c || !(e.width > 0) || !(e.height > 0)) return null;
         const s = e.viewHeight > 0 ? e.height / e.viewHeight : 1;
-        const vp = { type: 'viewport', ...base, x: c.x, y: c.y, w: e.width, h: e.height, cx: dc.x + (t.x || 0), cy: dc.y + (t.y || 0), s };
+        const mc = vpModelCentre(dc, t, Number.isFinite(e.twist) ? e.twist : 0);   // the view centre is turned by the twist (DCS)
+        const vp = { type: 'viewport', ...base, x: c.x, y: c.y, w: e.width, h: e.height, cx: mc.x, cy: mc.y, s };
         if (Number.isFinite(e.twist) && Math.abs(e.twist) > 1e-12) vp.tw = e.twist;   // a twisted view (DR.8: viewportMatrix turns it)
         const stt = Number(e.status) >>> 0;   // status flags (P.7): 16384 display locked, 131072 off
         if (stt & 16384) vp.locked = true;
@@ -557,6 +623,7 @@ export function importDwg(db, { versionTag = '' } = {}) {
         return { type: type === 'XLINE' ? 'xline' : 'ray', ...base, x: e.start.x, y: e.start.y, dx: d.x / n, dy: d.y / n };   // world coordinates (no OCS)
       }
       case 'ATTDEF': return null;   // ATTDEFs are read with their block (attdefOf)
+      case 'OLE2FRAME': case 'OLEFRAME': if (e.data) return null; skip(e.type); return null;   // an object with its OLE data is kept below (0.7 D7.23)
       default: skip(e.type === 'UNKNOWN' ? e.dxfName || 'UNKNOWN' : e.type); return null;
     }
   }
@@ -723,13 +790,16 @@ function xdataOf(xdata, app) {
 const hex = (n) => '#' + (n & 0xffffff).toString(16).padStart(6, '0');
 
 function plain(s) {
-  return String(s || '').replace(/%%[cC]/g, '⌀').replace(/%%[dD]/g, '°').replace(/%%[pP]/g, '±').replace(/%%[uUoO]/g, '').replace(/%%%/g, '%')
-    .replace(/\\U\+([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+  return unescapeText(String(s || '').replace(/%%[cC]/g, '⌀').replace(/%%[dD]/g, '°').replace(/%%[pP]/g, '±').replace(/%%[uUoO]/g, '').replace(/%%%/g, '%'));
 }
 
 function splinePoints(e) {
-  if (e.fit && e.fit.length > 1) return e.fit;
+  // a fit-point spline with a tolerance: the reader's curve through the fit points (approx*), for drawing
+  if (!(e.control && e.control.length) && e.approxControl && e.approxKnots) e = { ...e, control: e.approxControl, knots: e.approxKnots, weights: null };
   const cp = e.control || [], k = e.knots || [], p = e.degree || 3;
+  // 0.6.1: the curve itself when its control points and knots are known (the reader computes them for a fit-point
+  // spline when it can) — the fit points alone are only a coarse outline of it; they are the fallback
+  if (!(cp.length >= 2 && k.length === cp.length + p + 1) && e.fit && e.fit.length > 1) return e.fit;
   if (cp.length < 2) return [];
   if (k.length !== cp.length + p + 1) return cp;
   const w = e.weights && e.weights.length === cp.length ? e.weights : null;
@@ -798,7 +868,31 @@ function arcBetween(pts, p, q, b) {
   for (let k = 1; k < n; k++) { const t = a0 + theta * k / n; pts.push(cx + Math.abs(r) * Math.cos(t), cy + Math.abs(r) * Math.sin(t)); }
 }
 
+/**
+ * The viewport that is the sheet itself, among a layout's converted paper-space entities (D7.18), or undefined.
+ * CadCraft's own record (xdata) wins; else it is the viewport that shows paper space 1:1 and covers every other viewport
+ * (the largest such); else, in a layout with several, the first one when it covers all the others. A lone viewport at
+ * another scale is a real one and stays. (The old rule took the first viewport found, which hid a real one listed first.)
+ */
+export function sheetViewport(list) {
+  const vps = list.filter((e) => e.type === 'viewport');
+  const own = vps.find((v) => v.cc);
+  if (own) return own;
+  const tol = (v) => 1e-6 * Math.max(1, v.w, v.h);
+  const covers = (v, o) => Math.abs(o.x - v.x) + o.w / 2 <= v.w / 2 + tol(v) && Math.abs(o.y - v.y) + o.h / 2 <= v.h / 2 + tol(v);
+  const all = (v) => vps.every((o) => o === v || covers(v, o));
+  const unit = vps.filter((v) => Math.abs(v.s - 1) <= 1e-6 && all(v)).sort((a, b) => b.w * b.h - a.w * a.h);
+  if (unit.length) return unit[0];
+  return vps.length > 1 && all(vps[0]) ? vps[0] : undefined;
+}
+
 /** The plot style table a drawing's Model layout names in its page setup (0.6 DC.14), or ''. */
 function modelStyleSheet(db) {
   return String((db.layouts || []).find((l) => /^model$/i.test(l.name || ''))?.paper?.styleSheet || '').trim().slice(0, 64);
+}
+
+/** The file's scale list (ACAD_SCALELIST's SCALE objects) → meta.scales (0.7 D7.19; scales.js). */
+function scalesFrom(db) {
+  const list = cleanScales((db.objects || []).filter((o) => o.type === 'SCALE' && !o.undecoded && !o.damaged).map((o) => ({ name: o.name, paper: o.paperUnits, drawing: o.drawingUnits, unit: o.unitScale })));
+  return list.length ? { scales: list } : {};
 }

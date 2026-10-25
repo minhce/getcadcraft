@@ -62,9 +62,14 @@ const fmtN = (n) => Number(n.toPrecision(6)).toString();
 
 /** Standard scales for this drawing: architectural and engineering ones for imperial drawings. */
 export function scaleList(doc) {
-  const list = METRIC.map((n) => ({ n, label: ratioLabel(n) }));
-  if (!isImperial(doc)) return list;
-  return [...ARCH.map(([label, n]) => ({ n, label })).sort((a, b) => a.n - b.n), ...list];
+  const metric = METRIC.map((n) => ({ n, label: ratioLabel(n) }));
+  const std = isImperial(doc) ? [...ARCH.map(([label, n]) => ({ n, label })).sort((a, b) => a.n - b.n), ...metric] : metric;
+  // the drawing's own scales (its file's list, SCALELISTEDIT: scales.js) that the standard list lacks, after it
+  const own = (Array.isArray(doc.meta.scales) ? doc.meta.scales : []).map((x) => ({ n: x.drawing / x.paper, label: x.name, custom: true }))
+    .filter((x) => x.n > 0 && Number.isFinite(x.n)).sort((a, b) => a.n - b.n);
+  const extra = [];
+  for (const x of own) if (![...std, ...extra].some((y) => Math.abs(y.n - x.n) < 1e-6 * x.n)) extra.push(x);
+  return extra.length ? [...std, ...extra] : std;
 }
 
 /** How a viewport scale reads: a standard name when it is one, else 1:n. */

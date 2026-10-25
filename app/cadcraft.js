@@ -33,7 +33,7 @@ import { View, SNAP_LABELS, DRAWING_FONT } from './view.js';
 import { switchState } from './visedit.js';
 import { Engine, lookup, commandList, namedBlocks, setLengthFormat, lengthFormatLabel, lengthFormatName, qsTypeLabel, qsPropLabel, closeBlockEdit, closeRefEdit, isAttdefText, commandRegistry } from './commands.js';
 import { QS_PROPS, propsFor, valuesOf, quickSelect as qsCount } from './qselect.js';
-import { formatLength, formatArea, parseLength, readNumber, unitsOf, LUNITS } from './units.js';
+import { formatLength, formatArea, parseLength, readNumber, unitsOf, LUNITS, newDrawingUnits } from './units.js';
 import { selectionTotals } from './seltotals.js';   // 0.6 DF.4
 import { PATTERNS, hatchLines } from './hatch.js';
 import { polarTrack, trackPoint } from './tracking.js';
@@ -43,10 +43,14 @@ import { visibilityOf, setVisibility } from './dyn-blocks.js';
 import { dynGripActs } from './dyngrips.js';
 import { sheetNumberOf } from './sheetnum.js';
 import { openCompare } from './compare-ui.js';
+import { openHistory } from './history-ui.js';           // 0.7 D7.31: the History panel
+import { LocalHistory, CloudHistory } from './drawing-history.js';
 import { installShortcuts } from './keys-ui.js';
 import { installAlignPanel } from './align-ui.js';   // 0.6 DF.2: the Align and distribute panel
 import { installAttEdit } from './attedit-ui.js';   // 0.6 DF.5: EATTEDIT, BATTMAN, the REFEDIT banner
 import { installPlotStyles } from './plotstyle-ui.js';   // 0.6 DC.14: the plot style table editor
+import { installDimStyles } from './dimstyle-ui.js';
+import { installTour, appTourAutoOn, setAppTourAuto } from './tour.js';   // 0.7 D7.06: the first-drawing tour   // 0.7 D7.14: the dimension style manager
 import { BUILTIN as PLOT_BUILTIN, builtinTable, findTable, styleNameFor } from './plotstyle.js';
 import { hasAttributes } from './attedit.js';
 import { placePastedPicture, picturesToSave } from './pastepic.js';   // 0.6 DF.6: a picture pasted from the system clipboard
@@ -54,13 +58,14 @@ import { keyMap } from './mytools.js';
 import { has as hasKey } from './i18n.js';
 import { DynInput } from './dynin.js';
 import { readDxf, writeDxf } from './dxf.js';
+import { decodeDxfBytes } from './dxf-decode.js';
 import { saveDwg, DWG_VERSIONS, dwgVersionKey } from './dwg-save.js';
 import { writeDxf2000 } from './dxf2000.js';
 import { importDwg, VERSIONS, preR13 } from './dwg-import.js';
 import { gripMove, deg, rad, normAngle, SNAP_KINDS, textLayout, FONT_EM, LINE_SPACING } from './geom.js';
 import { DIM_KINDS, dimMeasure, formatMeasure } from './dims.js';
 import { PAPERS, paperByKey, makePaper, scaleList, scaleLabel, sOf, nOf, aimViewport, modelExtents } from './sheets.js';
-import { layoutSheet, modelSheet, displayList, toPdf, drawPreview, extentsOf, PEN_WIDTHS } from './plot.js';
+import { layoutSheet, modelSheet, displayList, toPdf, toSvg, toPngBlob, matchPaper, drawPreview, extentsOf, PEN_WIDTHS, pdfPending, readPdfUnderlays } from './plot.js';
 import { el, fillDl, bytes, num, fmt, frame } from './ui-util.js';
 import { attrRows, oneLine } from './attrs.js';
 import { LIB_TAGS } from './libplace.js';
@@ -84,12 +89,18 @@ import { installLispUi } from './appload.js';
 import { startAddons } from './addons/cadcraft-api.js';
 import { installAgents } from './agents.js';
 import { getHost } from "./host.js";
+import './pdfunder.js';   // PDFATTACH, PDFIMPORT, PDFCLIP, PDFADJUST, PDFLAYERS, PDF (0.7 D7.24)
+import { installPdfUnder } from './pdfunder-ui.js';
+import './spline-cmd.js';   // SPLINE, SPLINEDIT, PEDIT (0.7 D7.10)
 import './pictures-cmd.js';   // IMAGEATTACH, IMAGE, IMAGECLIP (0.5 WL.14, cad-files)
+import './scan-cmd.js';   // SCANATTACH … SCANTRACE, RASTERSNAP: scanned drawings (0.7 LC.6, session trace)
+import { installScanUi } from './scan-ui.js';
 import './asbuilt.js';        // ASBUILT: as-built points compared with the drawing's (0.6 LC.22, lc-structure)
 import { CloudAttach, attachFile, CLOUD_ACCEPT, CLOUD_READ, isCloudFile } from './cloud-cad.js';
 import { installMaps } from './maps-cad.js';   // MAPLAYERS (0.5 SG.3; maplayers.js loads on first use)   // POINTCLOUDATTACH, POINTCLOUD (0.5 SG.1; the reader loads with the first cloud)
 import './textmask-cmd.js';   // TEXTMASK (0.5 WL.8, cad-files)
 import './xclip-cmd.js';   // XCLIP (0.5 WL.16, cad-files)
+import { PadDetector } from './wheel-pad.js';   // 0.7 D7.56
 import { panButton, wheelFactor } from './input-mouse.js';   // 0.5 IP.3: the menu style's wheel and pan buttons (input-cadcraft.js)
 
 const root = document.querySelector('[data-cadcraft]');
@@ -124,11 +135,14 @@ function init(root) {
     tabs: saved.tabs === 'number' ? 'number' : 'full',   // sheet tabs: full names, or sheet numbers only (WL.9)
     selTotals: saved.selTotals === 'off' ? 'off' : 'on',   // the selection's length and area in the status bar (0.6 DF.4)
     trimDrag: saved.trimDrag === 'window' ? 'window' : 'path',   // TRIM / EXTEND, a drag on an empty spot: a freehand path or a window (0.6 DF.13)
+    toolbarRows: ['auto', '2', '1'].includes(saved.toolbarRows) ? saved.toolbarRows : 'auto',   // toolbar rows: wrap to fit, two rows, or one that scrolls (CP.1, GJoe2 getcadcraft/cadcraft#2)
+    toolbarDock: ['top', 'bottom', 'left', 'right'].includes(saved.toolbarDock) ? saved.toolbarDock : 'top',   // which side the toolbar sits on (0.7 D7.02; top = how it always was)
     emptyClick: saved.emptyClick === 'keep' ? 'keep' : 'clear',   // a click on an empty spot: clears the selection, or keeps it (Esc clears; 0.6 DC.67)
   };
   const persist = () => { try { localStorage.setItem('cadcraft.settings', JSON.stringify({ ...settings, kinds: [...settings.kinds] })); } catch { /* private window: fine */ } };
 
   const doc = new Doc();
+  doc.meta.units = newDrawingUnits();   // 0.7 UNITS: the starred length unit ($INSUNITS), else none as before
   const view = new View(ui.base, ui.over, doc);
   view.grid = settings.grid;
   view.lwDisplay = settings.lwt;
@@ -141,7 +155,7 @@ function init(root) {
     settingsDlg?.querySelectorAll('input[name="ccCursor"]').forEach((r) => { r.checked = r.value === size; });
   };
   // Paste point and what a click does to the selection: two radio groups in the same panel.
-  const RADIO_SETTINGS = { ccPaste: 'pasteBase', ccPick: 'pick', ccCorner: 'corner', ccLasso: 'lasso', ccTabs: 'tabs', ccSelTotals: 'selTotals', ccTrimDrag: 'trimDrag', ccEmptyClick: 'emptyClick' };
+  const RADIO_SETTINGS = { ccPaste: 'pasteBase', ccPick: 'pick', ccCorner: 'corner', ccLasso: 'lasso', ccTabs: 'tabs', ccSelTotals: 'selTotals', ccTrimDrag: 'trimDrag', ccEmptyClick: 'emptyClick', ccToolbarRows: 'toolbarRows', ccToolbarDock: 'toolbarDock' };
   const setRadio = (name, value) => {
     settings[RADIO_SETTINGS[name]] = value; persist();
     settingsDlg?.querySelectorAll('input[name="' + name + '"]').forEach((r) => { r.checked = r.value === value; });
@@ -155,8 +169,10 @@ function init(root) {
       if (e.target.name === 'ccCorner') applyCorner();
       if (e.target.name === 'ccTabs') renderTabs();
       if (e.target.name === 'ccSelTotals') renderSelTotals();
+      if (e.target.name === 'ccToolbarRows') applyToolbarRows();
+      if (e.target.name === 'ccToolbarDock') applyToolbarDock();
     });
-    settingsDlg.addEventListener('cc-settings-reset', () => { setCursor('medium'); setRadio('ccPaste', 'lower-left'); setRadio('ccPick', 'add'); setRadio('ccCorner', 'auto'); setRadio('ccLasso', 'lasso'); setRadio('ccTabs', 'full'); setRadio('ccSelTotals', 'on'); setRadio('ccTrimDrag', 'path'); setRadio('ccEmptyClick', 'clear'); applyCorner(); renderTabs(); renderSelTotals(); });
+    settingsDlg.addEventListener('cc-settings-reset', () => { setCursor('medium'); setRadio('ccPaste', 'lower-left'); setRadio('ccPick', 'add'); setRadio('ccCorner', 'auto'); setRadio('ccLasso', 'lasso'); setRadio('ccTabs', 'full'); setRadio('ccSelTotals', 'on'); setRadio('ccTrimDrag', 'path'); setRadio('ccEmptyClick', 'clear'); setRadio('ccToolbarRows', 'auto'); applyToolbarRows(); setRadio('ccToolbarDock', 'top'); applyToolbarDock(); applyCorner(); renderTabs(); renderSelTotals(); });
   }
 
   // The clipboard: this tab's copy + localStorage, so another tab can paste (storage may be off: memory only).
@@ -165,6 +181,7 @@ function init(root) {
   const clipboard = new Clipboard(clipStore);
 
   // ---- host for the command engine ----
+  const commandHooks = new Set();
   const host = {
     cursor: null, selection: new Set(), shift: false,
     clipboard, settings,
@@ -184,7 +201,9 @@ function init(root) {
     preview(ents) { view.state.preview = ents || []; view.invalidate(); },
     saveSettings: () => persist(),
     setToggle(name, on) { if (name in toggles && !!settings[name] !== !!on) toggle(name); },   // LWDISPLAY
+    addCommandHook: (fn) => commandHooks.add(fn),   // the first-drawing tour hears commands end (tour.js, 0.7 D7.06)
     onCommand(name) {
+      for (const f of commandHooks) { try { f(name); } catch { /* a hook's mistake never stops a command */ } }
       if (name && !['UNDO', 'U', 'REDO', 'MREDO'].includes(name)) commitViewport();   // VP.4: the viewport's new view is its own undo step
       if (!name) { acquired.length = 0; view.state.track = null; }   // tracking points last one command
       for (const b of root.querySelectorAll('[data-cmd]:not([role="menuitem"])')) b.setAttribute('aria-pressed', String(!!name && lookup(b.dataset.cmd.split(' ')[0])?.name === name));
@@ -193,9 +212,12 @@ function init(root) {
       scheduleProps();
     },
     zoomExtents: () => { rememberView(); view.fit(); },
+    regen: (all) => view.regen(all),   // REGEN, REGENALL (0.7)
     // point clouds (cloud-cad.js, 0.5 SG.1): one per window, under whichever drawing shows
     pickCloud: () => new Promise((resolve) => { const i = el('input', { type: 'file', accept: CLOUD_ACCEPT }); i.addEventListener('change', () => resolve(i.files[0] || null)); i.addEventListener('cancel', () => resolve(null)); i.click(); }),
     zoomCloud: () => { const b = host.cloud.bbox(); if (b) { rememberView(); view.fitPoints([{ x: b.minX, y: b.minY }, { x: b.maxX, y: b.maxY }]); } },
+    // REGISTERSCANS (0.7 LC.3, cloud-cad.js): the dialog of register-ui.js, loaded on first use; "Show registered cloud" attaches the registered LAS
+    registerScans: async () => { if (!host.registerUi) { const { installRegister } = await import('./register-ui.js'); host.registerUi = installRegister({ root, openRegistered: (file) => openLocal(file) }); } host.registerUi.open(); },
     status: (msg) => busy(msg),
     zoomWindow: (a, b, o = {}) => { rememberView(); view.fitPoints([a, b], o.exact ? 1 : 0.9); },   // in a turned view: the window as it lies on screen
     zoomPrevious: () => zoomPrevious(),
@@ -203,6 +225,7 @@ function init(root) {
     viewRect: () => view.viewRect(),
     showLayers: () => { ui.layers.closest('section').scrollIntoView({ block: 'nearest' }); ui.layers.querySelector('button')?.focus(); },
     newDrawing, openFile: () => openPicked(), saveFile, saveAs,
+    writeDrawing: (d, o) => writeDrawing(d, o),   // WBLOCK (0.7 D7.13): another drawing, written as a file
     plot: (c) => plotDialog(c),
     // INSERT, option File: another drawing, read here; then the whole drawing or one of its blocks
     pickDrawing: () => pickDrawing(),
@@ -232,6 +255,10 @@ function init(root) {
   const maps = installMaps({ root, attrib: root.querySelector('.cc-canvases'), view, doc, say: print, busy, ask, refocus: () => focusCommandLine() });
   host.maps = maps;
   view.underlay = (ctx, T, v) => { maps.paint(ctx, T, v); host.cloud.draw(ctx, T, v); };
+  const pdfUi = installPdfUnder({ root, view, doc });   // PDF pages under the drawing (0.7 D7.24: pdfunder-ui.js)
+  installScanUi({ root, view, doc, host });   // scanned drawings: file chooser, PDF pages as pictures, snap to raster lines (0.7 LC.6: scan-ui.js)
+  let nextPdf = null;   // a PDF chosen in Open: the next PDFATTACH / PDFIMPORT takes it instead of asking for a file
+  host.pickPdfs = ({ multiple = false } = {}) => { if (nextPdf) { const f = nextPdf; nextPdf = null; return Promise.resolve([f]); } return pdfUi.pick(multiple); };
   view.underlayKey = () => host.cloud.version + '|' + maps.key();
   view.snapExtra = (p, r) => host.cloud.snap(p, r);
   const engine = new Engine(doc, host);
@@ -281,7 +308,7 @@ function init(root) {
     } else if (w.kind === 'distance' && w.opts.base) parts.push(el('span', { className: 'cc-dyn-f is-active' }, typedNow || fmtL(Math.hypot(cur.x - w.opts.base.x, cur.y - w.opts.base.y))));
     else if (w.kind === 'angle' && w.opts.base) parts.push(el('span', { className: 'cc-dyn-f is-active' }, typedNow || fmt(deg(normAngle(Math.atan2(cur.y - w.opts.base.y, cur.x - w.opts.base.x)))) + '°'));
     dynBox.replaceChildren(...parts);
-    const s0 = view.toScreen(view.state.cursor.x, view.state.cursor.y), s = { x: s0.x + view.x0, y: s0.y + view.y0 };   // split screen: from the pane to the stage
+    const s0 = view.toScreen(view.state.cursor.x, view.state.cursor.y), cv = ui.base.parentElement, s = { x: s0.x + view.x0 + cv.offsetLeft, y: s0.y + view.y0 + cv.offsetTop };   // split screen: from the pane to the stage (the drawing may sit inset: document tabs, a workspace layout's blocks)
     const bw = dynBox.offsetWidth || 160, bh = dynBox.offsetHeight || 24, sw = ui.stage.clientWidth, sh = ui.stage.clientHeight;
     dynBox.style.left = Math.max(4, Math.min(sw - bw - 4, s.x + 18)) + 'px';
     dynBox.style.top = Math.max(4, Math.min(sh - bh - 4, s.y + 18)) + 'px';
@@ -650,10 +677,17 @@ function init(root) {
     cycle = null;
   });
   ui.over.addEventListener('pointerleave', () => { view.hoverPane = -1; view.state.cursor = null; view.state.snap = null; renderDyn(); view.invalidate(); });
+  const padDetector = new PadDetector();
   ui.over.addEventListener('wheel', (e) => {
     e.preventDefault();
     paneFromEvent(e);   // split screen: the wheel zooms the pane under the pointer
     const p = pos(e);
+    if (padDetector.isSwipe(e)) {   // D7.56: a trackpad's two-finger swipe pans (the content follows the fingers); a pinch and a mouse wheel zoom
+      rememberView('pan');
+      view.panBy(-e.deltaX, -e.deltaY);
+      if (lastRaw) moveCursor(view.toWorld(p.x, p.y));
+      return;
+    }
     const step = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
     rememberView('wheel');
     view.zoomAt(p.x, p.y, Math.pow(1.0018, -step * (e.ctrlKey ? 1 : wheelFactor())));   // IP.3: the style's wheel (a pinch stays as it is)
@@ -1272,6 +1306,85 @@ function init(root) {
   renderToolbar();
 
   function hideHint() { ui.hint.hidden = true; }
+  ui.hint.querySelector('[data-hint-close]')?.addEventListener('click', () => { hideHint(); focusCommandLine(); });   // CP.1 (GJoe2)
+  ui.hint.querySelector('[data-hint-tour]')?.addEventListener('click', () => { hideHint(); host.startTour?.(); });   // 0.7 D7.06
+  settingsDlg?.querySelector('[data-set-tour]')?.addEventListener('click', () => { settingsDlg.close?.(); host.startTour?.(); });
+  const tourAuto = settingsDlg?.querySelector('[data-tour-auto]');   // this app's own switch; Settings › Global has the one for every app
+  if (tourAuto) {
+    tourAuto.checked = appTourAutoOn();
+    tourAuto.addEventListener('change', () => setAppTourAuto(tourAuto.checked));
+    settingsDlg.addEventListener('cc-settings-reset', () => { setAppTourAuto(true); tourAuto.checked = true; });
+  }
+
+  // ---- toolbar rows (CP.1, GJoe2 getcadcraft/cadcraft#2): wrap = to the width, 2 = two rows, 1 = one row; both sideways when they do not fit ----
+  // The rows are cadcraft.css (.cc[data-toolbar-rows]): CadCraft's toolbar, and the Drafting classic and Ribbon styles' bars.
+  // The tools' icons / labels choice is the shell's (Settings › General › Toolbar, body[data-shell-tb]); Ctrl+F1 steps through it.
+  // 2 rows is "at most two": a bar whose groups wrap to two lines or fewer at this width just wraps (data-rows-wrap);
+  // one that needs more is laid out in two grid rows that scroll sideways.
+  const ROW_BARS = '.cc-tools, .cc-in-rbody, .cc-in-quickbar';
+  let rowsFrame = 0;
+  function applyToolbarRows() {
+    root.dataset.toolbarRows = settings.toolbarRows;
+    if (rowsFrame) return;
+    rowsFrame = requestAnimationFrame(() => {
+      rowsFrame = 0;
+      for (const bar of root.querySelectorAll(ROW_BARS)) {
+        if (settings.toolbarRows !== '2') { bar.removeAttribute('data-rows-wrap'); continue; }
+        let lines = 1, x = 0;
+        for (const k of bar.children) {
+          if (!k.getClientRects().length) continue;
+          const w = k.offsetWidth;
+          if (x && x + w > bar.clientWidth) { lines++; x = 0; }
+          x += w;
+        }
+        bar.toggleAttribute('data-rows-wrap', lines <= 2);
+      }
+    });
+  }
+  // ---- the toolbar's side (0.7 D7.02): cadcraft.css `.cc[data-toolbar-dock]` moves `.cc-tools` (and the menu styles' bars inside it) ----
+  function applyToolbarDock() { root.dataset.toolbarDock = settings.toolbarDock; applyToolbarRows(); view.resize?.(); }
+  host.setToolbarDock = (side) => { if (!['top', 'bottom', 'left', 'right'].includes(side)) return false; setRadio('ccToolbarDock', side); applyToolbarDock(); return true; };
+  host.getToolbarDock = () => settings.toolbarDock;
+  // Settings › General › Reset the layout is the shell's: it calls ccInput.resetLayout, so the toolbar goes back to the top with it
+  // (until the shell announces a reset itself — see the log: For the owner)
+  const hookShellReset = () => {   // the shell's script may load after this one: try again a few times
+    const ci = window.ccInput;
+    if (!ci || typeof ci.resetLayout !== 'function') return false;
+    if (ci.resetLayout.cadcraftDock) return true;
+    const shellReset = ci.resetLayout;
+    ci.resetLayout = function () { host.setToolbarDock('top'); return shellReset.apply(this, arguments); };
+    ci.resetLayout.cadcraftDock = true;
+    return true;
+  };
+  if (!hookShellReset()) for (const ms of [300, 1000, 3000, 8000]) setTimeout(hookShellReset, ms);
+  new ResizeObserver(applyToolbarRows).observe(root);
+  new MutationObserver(applyToolbarRows).observe(root, { childList: true, subtree: true, attributeFilter: ['data-shell-tb', 'hidden'] });
+  new MutationObserver(applyToolbarRows).observe(document.body, { attributes: true, attributeFilter: ['data-shell-tb'] });
+  document.fonts?.ready.then(applyToolbarRows);
+  applyToolbarRows();
+  applyToolbarDock();
+  /** Icons + text → icons → text (the shell's Toolbar buttons setting; same radios as Settings › General). */
+  const TB_CYCLE = ['both', 'icons', 'labels'];
+  function setToolbarDisplay(mode) {
+    const radio = document.querySelector('input[name="tb"][value="' + mode + '"]');
+    if (!radio) return false;
+    radio.checked = true;
+    radio.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+  const toolbarDisplay = () => document.body.getAttribute('data-shell-tb') || 'both';
+  const ROW_CYCLE = ['auto', '2', '1'];
+  host.setToolbarRows = (mode) => { setRadio('ccToolbarRows', mode); applyToolbarRows(); };
+  host.getToolbarRows = () => settings.toolbarRows;
+  host.setToolbarDisplay = setToolbarDisplay;
+  host.getToolbarDisplay = toolbarDisplay;
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'F1' || !e.ctrlKey || e.altKey || e.metaKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.shiftKey) { const next = ROW_CYCLE[(ROW_CYCLE.indexOf(settings.toolbarRows) + 1) % ROW_CYCLE.length]; host.setToolbarRows(next); status(t('status.toolbar.rows', { rows: t('set.toolbar_rows.' + next) })); }
+    else { const next = TB_CYCLE[(TB_CYCLE.indexOf(toolbarDisplay()) + 1) % TB_CYCLE.length]; if (setToolbarDisplay(next)) status(t('status.toolbar.display', { mode: t('set.toolbar_display.' + next) })); }
+  }, true);
 
   /**
    * Back to the command line after a dialog. Closing a modal with the mouse leaves Chromium's
@@ -1382,11 +1495,17 @@ function init(root) {
     takenByTools: () => new Map([...keyMap(host.myTools.data())].map(([k, v]) => [k, v.tool.label])) });
   // the Align and distribute panel (0.6 DF.2; ALIGNPANEL, Modify › More)
   installAlignPanel({ root, stage: ui.stage, engine, host, el, t, print, focusCommandLine });
+  // the Laser panel (0.7 SU.772; LASER, View › More): laser-cad.js + lib/laser's copy in laser/, loaded on first use
+  host.laserPanel = async () => { if (!host.laserUi) { const { installLaser } = await import('./laser-cad.js'); host.laserUi = installLaser({ stage: ui.stage, doc, host, el, t, print, ask, focusCommandLine }); } host.laserUi.open(); };
   // attribute editing (0.6 DF.5): EATTEDIT and BATTMAN dialogs, REFEDIT's Save / Discard banner
   installAttEdit({ root, stage: ui.stage, doc, engine, host, el, t, print, focusCommandLine, colorLabel, fmtL, parseLen: parseL, closeRefEdit });
   // plot style tables (0.6 DC.14): PLOTSTYLES and the Plot dialog's Edit tables…
   installPlotStyles({ root, doc, host, el, t, print, colorLabel, aciHex,
     pickFile: (accept) => new Promise((resolve) => { const i = el('input', { type: 'file', accept }); i.addEventListener('change', () => resolve(i.files[0] || null)); i.addEventListener('cancel', () => resolve(null)); i.click(); }) });
+  // the first-drawing tour (0.7 D7.06): starts by itself the first time, TOUR starts it again
+  installTour({ root, stage: ui.stage, doc, host, el, t, print, focusCommandLine });
+  // dimension styles (0.7 D7.14): DIMSTYLE's manager, its Modify form is the Properties panel's dimension fields
+  installDimStyles({ root, doc, host, el, t, print, props, focusCommandLine });
   // the menu styles (0.5 IP.3, input-cadcraft.js + the shell's app-input-ui.js): their messages go to the status bar, and
   // letters stay CadCraft's while a command runs or something is typed at the command line
   window.ccInputHooks = { status: (text) => status(text || ''), busy: () => engine.busy || ui.input.value !== '' };
@@ -1397,6 +1516,43 @@ function init(root) {
   host.compareSettings = () => openCompare({ root, el, t, has: hasKey, doc, print,
     docs: () => tabs.list.map((r) => { const d = tabs.docOf(r.id); return { id: r.id, name: d.meta.name || 'Drawing', doc: d }; }),
     onChange: (d) => { if (d === doc) { renderLayers(); scheduleProps(); view.invalidate(true); } } }).then(() => focusCommandLine());
+  // HISTORY (0.7 D7.31; history-ui.js): the copies Studio keeps on this computer each time it saves, and the cloud's versions of a
+  // drawing opened from there. The page only reads: nothing is uploaded, and the cloud's token stays in the shell.
+  const deskBridge = window.cadcraftDesktop && Number(window.cadcraftDesktop.version) >= 1 ? window.cadcraftDesktop : null;
+  const localHist = deskBridge && globalThis.indexedDB ? new LocalHistory() : null;
+  const cloudHist = deskBridge?.cloud ? new CloudHistory(deskBridge.cloud) : null;
+  const historyKey = () => { const hf = saveTargets.get(doc.meta.hostFile); return hf?.path || null; };
+  /** The drawing as SAVE would write it now (no file is touched), and its format. */
+  function currentBytes() {
+    const format = saveFormat();
+    const bytes = format === 'dwg' ? saveDwg(doc, { version: dwgVersion() }).bytes : new TextEncoder().encode((format === 'dxf2000' ? writeDxf2000(doc) : writeDxf(doc)).text);
+    return { bytes, format };
+  }
+  async function drawingOf(bytes, name) {
+    const ext = /\.dxf$/i.test(name) ? 'dxf' : 'dwg';
+    try { const { drawing } = await readDrawing(new File([bytes], name), ext); return { drawing, ext }; } finally { busy(null); }   // readDrawing shows "Reading …" 
+  }
+  host.history = () => {
+    let off = null;
+    const clearMarks = () => { view.compareMarks = null; view.invalidate(false); off?.(); off = null; };
+    const p = openHistory({ root, el, t, doc, print, ask, local: localHist, cloud: cloudHist, cloudRef: () => doc.meta.cloud || null, localKey: historyKey,
+      readBytes: async (bytes, name) => { const d = new Doc(); d.load((await drawingOf(bytes, name)).drawing); return d; },
+      currentDrawing: async () => { const c = currentBytes(); const d = new Doc(); d.load((await drawingOf(c.bytes, 'current.' + (c.format === 'dwg' ? 'dwg' : 'dxf'))).drawing); return d; },
+      openCopy: async (bytes, name) => { await openLocal(new File([bytes], name)); },
+      restore: async (bytes, name) => {
+        const key = historyKey();
+        if (localHist && key) { try { const cur = currentBytes(); await localHist.snapshot({ key, name: doc.meta.name, bytes: cur.bytes, format: cur.format, note: t('hist.note.before_restore') }); } catch (err) { console.warn(err); } }
+        const { drawing, ext } = await drawingOf(bytes, name);
+        const keep = Object.fromEntries(['name', 'source', 'hostFile', 'saveFormat', 'dwgVersion', 'cloud'].filter((k) => doc.meta[k] !== undefined).map((k) => [k, doc.meta[k]]));
+        doc.load({ ...drawing, meta: { ...drawing.meta, ...keep } });
+        doc.savedVersion = -1; doc.emit();   // not saved to the file until the person saves it
+        host.setSelection(new Set()); view.fit(); view.restorePanes(doc.vports); renderTabs(); renderInfo();
+        return ext === 'dwg' || ext === 'dxf';
+      },
+      setMarks: (marks) => { view.compareMarks = marks; view.invalidate(false); if (marks && !off) off = doc.on((kind) => { if (kind === 'load') clearMarks(); }); },
+      centerOn: (x, y) => { view.cx = x; view.cy = y; view.invalidate(true); } });
+    return p.then(() => { clearMarks(); focusCommandLine(); });
+  };
   host.viewportAt = (p) => viewportAt(p);
   host.enterViewport = (vp) => enterViewport(vp);
   host.leaveViewport = () => leaveViewport({ command: true });   // PSPACE
@@ -1493,19 +1649,21 @@ function init(root) {
   // ---- blocks panel ----
   let blocksRaf = 0;
   function scheduleBlocks() { if (!blocksRaf) blocksRaf = requestAnimationFrame(() => { blocksRaf = 0; renderBlocks(); }); }
+  /** INSERT with this block's name already given (the Blocks panel, the layouts' project browser). */
+  async function insertBlock(name) {
+    if (engine.busy) { engine.escape(); await engine.done; }
+    engine.run('INSERT');   // runs until the block is placed: do not wait for it here
+    await new Promise((r) => setTimeout(r, 0));
+    if (engine.running === 'INSERT' && engine.expects === 'string') { print(engine.promptText() + ' ' + name); engine.text(name); }
+    ui.input.focus({ preventScroll: true });
+  }
   function renderBlocks() {
     const names = namedBlocks(doc);
     ui.blocksEmpty.hidden = names.length > 0;
     ui.blocks.replaceChildren(...names.slice(0, 300).map((name) => {
       const uses = doc.blockUses(name);
       const ins = el('button', { type: 'button', className: 'cc-linkbtn', 'aria-label': 'Insert ' + name }, 'Insert');
-      ins.addEventListener('click', async () => {
-        if (engine.busy) { engine.escape(); await engine.done; }
-        engine.run('INSERT');   // runs until the block is placed: do not wait for it here
-        await new Promise((r) => setTimeout(r, 0));
-        if (engine.running === 'INSERT' && engine.expects === 'string') { print(engine.promptText() + ' ' + name); engine.text(name); }
-        ui.input.focus({ preventScroll: true });
-      });
+      ins.addEventListener('click', () => insertBlock(name));
       return el('li', {}, el('span', { className: 'cc-block-name', title: name }, name), el('span', { className: 'cc-muted' }, num(uses) + '×'), ins);
     }));
     if (names.length > 300) ui.blocks.append(el('li', { className: 'cc-muted' }, t('app.blocks.more', { count: num(names.length - 300) })));
@@ -1519,6 +1677,9 @@ function init(root) {
     pen: ui.plot.querySelector('[data-plot-pen]'), dpi: ui.plot.querySelector('[data-plot-dpi]'), info: ui.plot.querySelector('[data-plot-info]'), canvas: ui.plot.querySelector('[data-plot-canvas]'),
     status: ui.plot.querySelector('[data-plot-status]'), save: ui.plot.querySelector('[data-plot-save]'), open: ui.plot.querySelector('[data-plot-open]'),
     close: ui.plot.querySelector('[data-plot-close]'),
+    png: ui.plot.querySelector('[data-plot-png]'), svg: ui.plot.querySelector('[data-plot-svg]'), print: ui.plot.querySelector('[data-plot-print]'),
+    printBox: ui.plot.querySelector('[data-plot-printbox]'), printer: ui.plot.querySelector('[data-plot-printer]'),
+    printPaper: ui.plot.querySelector('[data-plot-printpaper]'), copies: ui.plot.querySelector('[data-plot-copies]'),
   };
   plotUi.paper.append(...PAPERS.map((p) => el('option', { value: p.key }, p.label)));
   plotUi.pen.append(...PEN_WIDTHS.map((w) => el('option', { value: String(w) }, w.toFixed(2) + ' mm')));
@@ -1547,6 +1708,7 @@ function init(root) {
       plotUi.status.textContent = '';
       ui.plot.showModal();
       updatePlot();
+      fillPrinters();
     });
   }
   let plotPicking = false;
@@ -1635,13 +1797,14 @@ function init(root) {
     const { sheet, info } = currentSheet();
     const style = findTable(doc, plotUi.style.value);
     plotUi.info.textContent = [info, style ? '' : t('plotstyle.plot.missing', { name: plotUi.style.value })].filter(Boolean).join(' ');
-    plotUi.save.disabled = plotUi.open.disabled = !sheet;
+    plotUi.save.disabled = plotUi.open.disabled = plotUi.png.disabled = plotUi.svg.disabled = plotUi.print.disabled = !sheet;
     const cv = plotUi.canvas, box = cv.parentElement.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
     cv.width = Math.round(box.width * dpr); cv.height = Math.round(box.height * dpr);
     const ctx = cv.getContext('2d');
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, cv.width, cv.height);
     if (!sheet) { plotState.list = null; return; }
+    if (pdfPending(doc)) { plotUi.save.disabled = plotUi.open.disabled = plotUi.png.disabled = plotUi.svg.disabled = plotUi.print.disabled = true; readPdfUnderlays(doc).then(() => updatePlot()); return; }   // 0.7 D7.24: the underlays' pages first
     const list = displayList(doc, sheet, { style: style || builtinTable('colour') });
     plotState.list = list; plotState.sheet = sheet;
     const pad = 12 * dpr, k = Math.min((cv.width - 2 * pad) / list.w, (cv.height - 2 * pad) / list.h);
@@ -1651,19 +1814,128 @@ function init(root) {
     ctx.strokeStyle = '#555'; ctx.lineWidth = 1; ctx.strokeRect(ox + 0.5, oy + 0.5, list.w * k - 1, list.h * k - 1);
   }
 
-  async function makePdf() {
+  /** The plot's file name without its extension (the drawing, and the sheet when a layout is open). */
+  const plotBase = () => (doc.meta.name || 'Drawing1') + (doc.layout ? '-' + doc.layout.name : '');
+  const safeName = (n) => n.replace(/[\\/:*?"<>|]+/g, '_');
+  async function pdfBytes() {
     const list = plotState?.list;
     if (!list) return null;
     plotUi.status.textContent = t('app.making_pdf');
-    const { bytes, report } = await toPdf(list, { pen: +plotUi.pen.value, maxDpi: +(plotUi.dpi?.value || 0), title: (doc.meta.name || 'Drawing1') + (doc.layout ? ' – ' + doc.layout.name : '') });
-    const name = (doc.meta.name || 'Drawing1') + (doc.layout ? '-' + doc.layout.name : '') + '.pdf';
+    const made = await toPdf(list, { pen: +plotUi.pen.value, maxDpi: +(plotUi.dpi?.value || 0), title: (doc.meta.name || 'Drawing1') + (doc.layout ? ' – ' + doc.layout.name : '') });
     plotUi.status.textContent = '';
+    return made;
+  }
+  async function makePdf() {
+    const list = plotState?.list;
+    const made = await pdfBytes();
+    if (!made) return null;
+    const { bytes, report } = made;
+    const name = plotBase() + '.pdf';
     print(t(plotState.sheet?.scale ? 'app.plot.done.scale' : 'app.plot.done', { name, bytes: bytes.length.toLocaleString('en-US'), w: fmt(list.w), h: fmt(list.h), scale: plotState.sheet?.scale?.label ?? '' }));
-    if (report.missing) print('  ' + t('app.plot.missing_chars', { n: report.missing }));
+    if (report.missing) print('  ' + t(report.font === 'Helvetica' ? 'app.plot.missing_chars' : 'app.plot.missing_glyphs', { n: report.missing }));   // Helvetica: no font could be embedded
     if (report.pictures) print('  ' + t('app.plot.pictures', { n: report.pictures, cap: report.shrunk ? plotUi.dpi.value : '' }));
     if (report.kept) print('  ' + t('app.plot.pictures_jpeg', { n: report.kept }));
-    return { url: URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' })), name: name.replace(/[\\/:*?"<>|]+/g, '_') };
+    return { url: URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' })), name: safeName(name) };
   }
+  /** Hand a Blob to the person as a file (the browser downloads it; Studio asks where to save). */
+  function giveFile(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = el('a', { href: url, download: safeName(name) });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+  // PNG and SVG come from the same display list as the PDF (plot.js toPngBlob / toSvg); pictures stay in the PDF (0.7 D7.20)
+  plotUi.png.addEventListener('click', async () => {
+    const list = plotState?.list;
+    if (!list) return;
+    plotUi.status.textContent = t('plot.making_png');
+    try {
+      const r = await toPngBlob(list, { dpi: 300, pen: +plotUi.pen.value, font: DRAWING_FONT });
+      giveFile(r.blob, plotBase() + '.png');
+      print(t('plot.png.done', { name: plotBase() + '.png', w: r.w, h: r.h, dpi: r.dpi }));
+      if (r.capped) print('  ' + t('plot.png.capped', { dpi: r.dpi }));
+      if (r.pictures) print('  ' + t('plot.pictures.left_out', { n: r.pictures }));
+      closePlot();
+    } catch (err) { print(t('plot.png.failed', { why: String(err?.message || err) })); }
+    plotUi.status.textContent = '';
+  });
+  plotUi.svg.addEventListener('click', () => {
+    const list = plotState?.list;
+    if (!list) return;
+    const r = toSvg(list, { pen: +plotUi.pen.value, title: (doc.meta.name || 'Drawing1') + (doc.layout ? ' – ' + doc.layout.name : ''), font: DRAWING_FONT });
+    giveFile(new Blob([r.text], { type: 'image/svg+xml' }), plotBase() + '.svg');
+    print(t('plot.svg.done', { name: plotBase() + '.svg', bytes: r.text.length.toLocaleString('en-US') }));
+    if (r.report.pictures) print('  ' + t('plot.pictures.left_out', { n: r.report.pictures }));
+    closePlot();
+  });
+  // Printing (0.7 D7.20). Studio: the system's printers through the shell (paper, copies); the browser: the PDF in a hidden
+  // frame and the browser's own Print dialog. Studio on a computer only: tablets have no `printers`.
+  const printers = (window.cadcraftDesktop && Number(window.cadcraftDesktop.version) >= 1 && window.cadcraftDesktop.printers) || null;   // Studio on a computer
+  let printerList = null;   // { accepts, printers } once asked
+  if (printers) { plotUi.printBox.hidden = false; plotUi.open.hidden = true; }
+  async function fillPrinters() {
+    if (!printers) return;
+    try { printerList = await printers.list(); } catch (err) { printerList = { accepts: 'pdf', printers: [], error: String(err?.message || err) }; }
+    const ps = printerList.printers;
+    plotUi.printer.replaceChildren(...(ps.length ? ps.map((p) => el('option', { value: p.name }, p.name)) : [el('option', { value: '' }, t('plot.printers.none'))]));
+    const want = ps.find((p) => p.name === plotPrefs.printer) || ps.find((p) => p.default) || ps[0];
+    if (want) plotUi.printer.value = want.name;
+    fillPrintPapers();
+    plotUi.print.disabled = !ps.length || !plotState?.list;
+    if (!ps.length) plotUi.status.textContent = printerList.error ? t('plot.print.failed', { why: printerList.error.replace(/^[a-z_]+: /, '') }) : t('plot.printers.none');
+  }
+  function fillPrintPapers() {
+    const p = printerList?.printers.find((x) => x.name === plotUi.printer.value);
+    const list = plotState?.list;
+    const same = list && p ? matchPaper(p.papers, list.w, list.h) : '';
+    plotUi.printPaper.replaceChildren(
+      el('option', { value: '__same__' }, same ? t('plot.print.paper.same', { paper: same }) : t('plot.print.paper.current')),
+      ...(p?.papers || []).map((n) => el('option', { value: n }, n)));
+  }
+  plotUi.printer.addEventListener('change', () => { fillPrintPapers(); plotPrefs.printer = plotUi.printer.value; savePlotPrefs(); });
+  plotUi.print.addEventListener('click', async () => {
+    const list = plotState?.list;
+    if (!list) return;
+    const base = plotBase();
+    if (!printers) {   // the browser: a hidden frame holding the PDF, then its Print dialog
+      const made = await pdfBytes();
+      if (!made) return;
+      const url = URL.createObjectURL(new Blob([made.bytes], { type: 'application/pdf' }));
+      const fr = el('iframe', { src: url, 'aria-hidden': 'true', tabindex: '-1', style: 'position:fixed;width:1px;height:1px;border:0;opacity:0;right:0;bottom:0' });
+      let fired = false;
+      const go = () => {
+        if (fired) return; fired = true;
+        try { fr.contentWindow.focus(); fr.contentWindow.print(); print(t('plot.print.browser', { name: base + '.pdf' })); closePlot(); }
+        catch { print(t('plot.print.browser_blocked')); window.open(url, '_blank'); }
+        setTimeout(() => { fr.remove(); URL.revokeObjectURL(url); }, 120000);
+      };
+      fr.addEventListener('load', () => setTimeout(go, 400));
+      document.body.append(fr);
+      return;
+    }
+    const ps = printerList?.printers.find((x) => x.name === plotUi.printer.value);
+    if (!ps) return;
+    const sel = plotUi.printPaper.value;
+    const paper = sel === '__same__' ? matchPaper(ps.papers, list.w, list.h) : sel;
+    const copies = Math.max(1, Math.min(99, Math.round(+plotUi.copies.value || 1)));
+    plotUi.print.disabled = true;
+    try {
+      let bytes;
+      if (printerList.accepts === 'png') {
+        plotUi.status.textContent = t('plot.making_png');
+        bytes = new Uint8Array(await (await toPngBlob(list, { dpi: 300, pen: +plotUi.pen.value, font: DRAWING_FONT })).blob.arrayBuffer());
+      } else bytes = (await pdfBytes()).bytes;
+      plotUi.status.textContent = t('plot.printing');
+      await printers.print(bytes, { printer: ps.name, copies, paper, landscape: list.w > list.h, title: base });
+      plotPrefs.printer = ps.name; savePlotPrefs();
+      print(t('plot.print.sent', { printer: ps.name, copies, name: base }));
+      closePlot();
+    } catch (err) {
+      print(t('plot.print.failed', { why: String(err?.message || err).replace(/^[a-z_]+: /, '') }));
+      plotUi.status.textContent = t('plot.print.failed', { why: String(err?.message || err).replace(/^[a-z_]+: /, '') });
+    }
+    plotUi.print.disabled = false;
+  });
   plotUi.save.addEventListener('click', async () => {
     const pdf = await makePdf();
     if (!pdf) return;
@@ -1716,7 +1988,7 @@ function init(root) {
   async function newDrawing() {
     // as AutoCAD: a new drawing opens in its own tab (doctabs.js); an untouched new drawing is simply used
     if (!tabs.pristine()) { await tabs.add(); print(t('doctabs.new.done', { name: doc.meta.name })); return; }
-    doc.load({ meta: { name: doc.meta.name || 'Drawing1' } });
+    doc.load({ meta: { name: doc.meta.name || 'Drawing1', units: newDrawingUnits() } });
     lastReport = null;
     host.setSelection(new Set());
     view.fit();
@@ -1735,14 +2007,30 @@ function init(root) {
   const keepTarget = (hf) => { const id = 'h' + (++targetSeq); saveTargets.set(id, hf); doc.meta.hostFile = id; };
   const openTypes = () => [
     { description: t('files.type.drawings'), extensions: ['.dwg', '.dxf'] },
+    { description: t('files.type.pdf'), extensions: ['.pdf'] },   // 0.7 D7.24
     { description: t('files.type.sheetset'), extensions: ['.ccsheets'] },
     { description: t('files.type.cloud'), extensions: CLOUD_READ.map((e) => '.' + e) },   // a point cloud under the drawing (SG.1; formats from cloud-types.js, 0.6 PF)
     { description: t('files.type.other'), extensions: ['.json', '.pln', '.pla', '.tpl', '.bpn'] },
   ];
+  // 0.6.1 FIX-061-OPEN-HANG: Open from the toolbar or the command line runs as the OPEN command, and that command waits for
+  // the file to open — so opening must never wait for the command that is running to finish when it is that one (it waited
+  // forever: the drawing never opened and every later command hung behind it). A second Open while the dialog is still up
+  // asks for no second dialog; files open one after another, never two loads at once.
+  const FILE_COMMANDS = new Set(['OPEN', 'SAMPLES']);
+  async function freeEngine() {
+    if (!engine.busy || FILE_COMMANDS.has(engine.running)) return;
+    engine.escape();
+    await engine.done;
+  }
+  let picking = false, openQueue = Promise.resolve();
+  const oneAtATime = (fn) => { const run = openQueue.then(fn, fn); openQueue = run.catch(() => {}); return run; };
   async function openPicked() {
+    if (picking) { status(t('app.open.picking')); return; }
+    picking = true;
     let files;
-    try { files = await fileHost.openFile({ types: openTypes() }); } catch (err) { print(t('app.open.failed', { file: '', why: err.message })); return; }
-    for (const f of files) await openHostFile(f);
+    try { files = await fileHost.openFile({ types: openTypes() }); } catch (err) { print(t('app.open.failed', { file: '', why: err?.message || String(err) })); files = []; } finally { picking = false; }
+    for (const f of files || []) await openHostFile(f);
+    focusCommandLine();   // the native dialog took the focus: typing goes to the command line again
   }
   /** A HostFile (picked, dropped, launched): a set file opens in the Sheet Set panel with its folder when the host can
    *  reach it (desktop), anything else through openLocal; a drawing that can be written in place is kept as its target. */
@@ -1754,23 +2042,29 @@ function init(root) {
     let file;
     try { const b = await hf.file(); file = b instanceof File ? b : new File([b], hf.name, { lastModified: hf.lastModified || Date.now() }); }
     catch (err) { print(t('app.open.failed', { file: hf.name, why: err.message })); return; }
-    if ((await openLocal(file)) && hf.writable && /\.(dwg|dxf)$/i.test(hf.name)) keepTarget(hf);
+    if ((await openLocal(file)) && hf.writable && /\.(dwg|dxf)$/i.test(hf.name)) {
+      keepTarget(hf);
+      // the file as it was when opened is the first copy in History (0.7 D7.31): saving over it would otherwise lose it
+      if (localHist && hf.path) file.arrayBuffer().then((b) => localHist.snapshot({ key: hf.path, name: hf.name.replace(/\.[^.]+$/, ''), bytes: new Uint8Array(b), format: /\.dxf$/i.test(hf.name) ? 'dxf' : 'dwg', note: 'opened' })).catch((err) => console.warn('history:', err));
+    }
   }
   fileHost.onOpenFiles(async (files) => { for (const f of files) await openHostFile(f); });
 
   /** `recovered` (dwg-autosave.js): the copy's name, source file and save format; the drawing opens unsaved, and a failure throws. */
-  async function openLocal(file, recovered = null) {
+  function openLocal(file, recovered = null) { return oneAtATime(() => openLocalNow(file, recovered)); }
+  async function openLocalNow(file, recovered) {
     const ext = (file.name.match(/\.([a-z0-9]+)$/i)?.[1] || '').toLowerCase();
     if (isCloudFile(file.name)) {   // a point cloud goes under the drawing, at its own coordinates (SG.1); a scanner's own file gets its card (0.6 PF)
       try { await attachFile({ host, print, doc }, file); } catch (err) { print(t('pc.failed', { file: file.name, why: err.message })); } finally { busy(null); }
       return true;
     }
+    if (ext === 'pdf') { await openPdfFile(file); return true; }   // 0.7 D7.24: a PDF is imported as drawing objects or attached as an underlay
     if (ext === 'json') { openSketchExport(file); return; }
     if (['pln', 'pla', 'tpl', 'bpn'].includes(ext)) { otherProject(file, ext); return; }
     if (ext === 'ccsheets') { print(t('sheetset.open.viafolder', { file: file.name })); host.sheetSet?.focus(); return; }   // a set needs its folder (its drawings)
     if (host.openAppFile && (await host.openAppFile(file))) return;   // .lsp / .dcl load, .pgp aliases (appload.js)
     if (ext !== 'dwg' && ext !== 'dxf') { print(t('app.open.wrong_type', { file: file.name })); return; }
-    if (engine.busy) { engine.escape(); await engine.done; }
+    await freeEngine();
     busy('Opening ' + file.name + '…');
     await frame();
     try {
@@ -1798,6 +2092,15 @@ function init(root) {
     } finally { busy(null); }
   }
 
+  /** A PDF chosen in Open (or dropped): import its page as drawing objects (a new tab) or attach it under this drawing. */
+  async function openPdfFile(file) {
+    const k = await ask({ title: t('app.open.pdf.title'), text: t('app.open.pdf.text', { file: file.name }), buttons: [['attach', t('app.open.pdf.attach'), 'btn-line'], ['import', t('app.open.pdf.import'), 'btn-plot'], ['cancel', t('app.open.pdf.cancel'), 'btn-line']] });
+    if (k !== 'import' && k !== 'attach') return;
+    nextPdf = { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) };
+    if (k === 'import' && !tabs.pristine()) await tabs.add({ name: file.name.replace(/\.[^.]+$/, '') });
+    engine.text(k === 'import' ? 'PDFIMPORT' : 'PDFATTACH');   // it asks the page and the insertion point from here
+  }
+
   /**
    * An Archicad project, archive, template or backup (0.4 part 2, N.4): CadCraft opens DWG and DXF, so say what the file
    * is and how to get a drawing out of it; when BimCraft here takes a handed-over file (ui.inc data-bim-url), offer it.
@@ -1817,7 +2120,7 @@ function init(root) {
 
   /** A sketch export from the CadCraft macro for SolidWorks (cadcraft-sw-export JSON): one sketch → the drawing. */
   async function openSketchExport(file) {
-    if (engine.busy) { engine.escape(); await engine.done; }
+    await freeEngine();
     let r;
     try { r = readSwExport(await file.text()); } catch (err) { r = { ok: false, error: err.message }; }
     if (!r.ok) { print(t('app.open.failed', { file: file.name, why: r.error })); return; }
@@ -1845,9 +2148,7 @@ function init(root) {
     const data = new Uint8Array(await file.arrayBuffer());
     let drawing, format;
     if (ext === 'dxf') {
-      let text = new TextDecoder('utf-8').decode(data);
-      if (text.includes('�')) text = new TextDecoder('windows-1252').decode(data);
-      drawing = readDxf(text);
+      drawing = readDxf(decodeDxfBytes(data).text);   // $DWGCODEPAGE / UTF-8 (0.7 D7.16)
       format = 'DXF' + (VERSIONS[drawing.meta.version] ? ' ' + VERSIONS[drawing.meta.version] : '') + (drawing.meta.version ? ' (' + drawing.meta.version + ')' : '');
     } else {
       const tag = new TextDecoder().decode(data.subarray(0, 6));
@@ -1864,9 +2165,7 @@ function init(root) {
     await frame();
     if (dxf) {
       const { readDxfModel } = await import('./dxf-model.js');
-      let text = new TextDecoder('utf-8').decode(data);
-      if (text.includes('\ufffd')) text = new TextDecoder('windows-1252').decode(data);
-      return readDxfModel(text);
+      return readDxfModel(decodeDxfBytes(data).text);
     }
     const tag = new TextDecoder().decode(data.subarray(0, 6));
     const old = preR13(tag);   // 0.6 DF.11: R12 and earlier are not read: say so plainly
@@ -2126,6 +2425,9 @@ function init(root) {
       print(r.cancelled ? t('app.not_saved') : t('app.save.failed', { format: FORMATS[format].label(), why: String(r.error?.message || r.error || '') })); return;
     }
     if (keep && r.target?.writable) keepTarget(r.target);
+    if (keep && localHist && r.how === 'written' && r.path) {   // a copy for the History panel (0.7 D7.31), Studio only
+      localHist.snapshot({ key: r.path, name: doc.meta.name, bytes: typeof data === 'string' ? new TextEncoder().encode(data) : data, format }).catch((err) => console.warn('history:', err));
+    }
     if (doc.version === version) doc.markSaved();   // an edit made while the dialog was open stays unsaved
     const src = doc.meta.source || '', file = r.name || name;
     if (r.how === 'written') print(t('app.save.written', { file: r.path || file, format: FORMATS[format].label() }));
@@ -2134,6 +2436,20 @@ function init(root) {
     // pasted pictures (0.6 DF.6): a DWG names its pictures' files, so each one goes beside the drawing as its own file
     for (const p of picturesToSave(doc, file)) { fileHost.download(p.bytes, p.name, p.mime); print('  ' + t('pic.paste.saved', { file: p.name, drawing: file })); }
     renderInfo();
+  }
+
+  /** A drawing that is not the open one (WBLOCK's) written in `format` and handed to the host as a download / save dialog. */
+  async function writeDrawing(d, { name, format = 'dwg' } = {}) {
+    if (!FORMATS[format]) format = 'dwg';
+    let data;
+    try {
+      if (format === 'dwg') ({ bytes: data } = saveDwg(d, { version: dwgVersion() }));
+      else if (format === 'dxf2000') ({ text: data } = writeDxf2000(d));
+      else ({ text: data } = writeDxf(d));
+    } catch (err) { console.error(err); return { ok: false, why: err.message }; }
+    const file = (name || 'Drawing') + '.' + extOf(format);
+    const r = await fileHost.saveAs({ data, name: file, types: [{ description: FORMATS[format].label(), extensions: ['.' + extOf(format)], mime: FORMATS[format].mime }], type: FORMATS[format].mime, title: t('cmd.wblock.title') });
+    return r.ok ? { ok: true, file: r.name || file } : { ok: false, why: r.cancelled ? t('app.not_saved') : String(r.error?.message || r.error || '') };
   }
 
   /** SAVEAS: choose DWG (and its version) or DXF (remembered for this drawing and for new ones), then save. */
@@ -2266,9 +2582,13 @@ function init(root) {
   fileHost.launchFiles().then(async (files) => { for (const f of files) await openHostFile(f); }, (err) => console.warn('launch files:', err));   // i18n-ignore (developer message)
   // /lab/cadcraft?handoff=<id> (BimCraft's "Edit in CadCraft"): open the drawing it left for us
   const handoff = handoffParam(location.search);
+  const cloudRef = (() => {   // ?cloud=<drawing uuid>&cv=<version> from Studio's hub (studio/hub/hub.js openCloud)
+    const q = new URLSearchParams(location.search), id = q.get('cloud') || '';
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) ? { drawing: id.toLowerCase(), version: Number.parseInt(q.get('cv') || '', 10) || null } : null;
+  })();
   if (handoff) {
     const u = new URL(location.href);
-    u.searchParams.delete('handoff');
+    u.searchParams.delete('handoff'); u.searchParams.delete('cloud'); u.searchParams.delete('cv');
     history.replaceState(history.state, '', u.pathname + u.search + u.hash);   // a reload must not look for it again
     busy(t('app.receiving_drawing'));
     takeHandoff(handoff).then(
@@ -2276,12 +2596,23 @@ function init(root) {
         busy(null);
         if (!got) { print(t('app.drawing_handed_over_another')); return; }
         print(t('app.handoff.received', { file: got.file.name }));
-        openLocal(got.file);
+        openLocal(got.file).then((opened) => { if (opened && cloudRef) doc.meta.cloud = cloudRef; });   // Studio opened it from the cloud: History reads its versions (0.7 D7.31)
       },
       (err) => { busy(null); console.error(err); print(t('app.handoff.failed', { why: err.message })); });
   }
   // Studio Live from a link: a page a host serves on the LAN (#live=<code>) or an invite's "Join in the browser"
   // (?live=<ROOM>#<secret>): live.js asks for a name and joins; the drawing comes from the host
+  // ---- workspace layouts (0.7 WS.8; Settings › Global › Layout): the shell's engine builds a layout file's blocks, workspace-cadcraft.js
+  // fills them with CadCraft's own tools, palettes and views. Only on pages whose build lists layouts (#cc-workspace, app-shell.inc). ----
+  if (document.getElementById('cc-workspace')) {
+    Promise.all([import('cc-workspace'), import('./workspace-cadcraft.js')]).then(async ([E, W]) => {
+      const ws = await W.createCadcraftWorkspace({ root, doc, view, engine, cad: host, t, setCurrent, open3d, insertBlock, status, statusEl: root.querySelector('.cc-status') });
+      if (!ws) { document.documentElement.removeAttribute('data-cc-ws-boot'); return; }
+      const wsEngine = E.mountWorkspaces(ws.adapter);
+      ws.attach(wsEngine); wsEngine.refresh();
+      window.cadcraftWorkspace = Object.freeze({ engine: wsEngine, inspect: () => wsEngine.inspect() });   // tests and the console
+    }).catch((err) => { console.error(err); document.documentElement.removeAttribute('data-cc-ws-boot'); });
+  }
   if (/[#&]live=|[?&]live=/.test(location.hash + location.search)) import('./live.js').then((m) => m.joinFromPage(window.cadcraft, fileHost), (err) => print(t('live.join_failed', { why: err.message })));
 }
 

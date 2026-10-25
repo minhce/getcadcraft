@@ -42,6 +42,10 @@ import { defaultAttrs, attrRows, nextNumber, oneLine } from './attrs.js';
 import { planCopy, applyCopy } from './blockcopy.js';
 import { ensureLibraryBlock, libraryAttrs } from './libplace.js';
 import { Clipboard, makeClip, basePoint, pastePreview, pasteClip } from './clipboard.js';
+import { wblockDoc } from './wblock.js';
+import { withPlain } from './mtext.js';
+import { listStyles, currentName, styleOf, setCurrent, saveStyle, renameStyle, deleteStyle, applyStyle, differences, findName } from './dimstyles.js';
+import { scalesOf, parseRatio, scaleLine, addScale, editScale, deleteScale, resetScales } from './scales.js';
 import { installParametric } from './pcommands.js';
 import { commandApi } from './addons/commands-api.js';
 import { t, has } from './i18n.js';
@@ -58,7 +62,7 @@ import { installLisp } from './lisp/install.js';
 import { isXrefRoot } from './xref.js';
 import { lassoHits, pointInPoly } from './lasso.js';
 import { curveAt, circleTTR, circleTTT } from './tancircle.js';
-import { setVisibility } from './dyn-blocks.js';
+import { setVisibility, freeObjects } from './dyn-blocks.js';
 import { openVis, closeVis, switchState, hideIds, showFi, hiddenParts, newState, renameState, deleteState, syncCurrent } from './visedit.js';
 import { activeUcs, toWorld as ucsToWorld, toUcs, vecToWorld, setUcs, threePoint, fromObject, cleanUcs, ucsData, UCS_NAME_RE } from './ucs.js';
 import { alignMatrix, alignMoves, distributeMoves } from './align.js';   // 0.6 DF.2
@@ -1047,7 +1051,8 @@ def('TEXTEDIT', ['ED', 'DDEDIT'], async (c) => {
     if (r && e.type === 'mleader') { delete r.ha; delete r.va; }   // its text's place follows the landing
     c.host.setSelection(new Set());
     if (r && String(r.s ?? '').trim()) {
-      const next = { ...c.doc.get(e.id), ...r };
+      const cur = c.doc.get(e.id);
+      const next = e.type === 'text' ? withPlain(cur, { ...cur, ...r }) : { ...cur, ...r };   // the formatting codes stay (mtext.js)
       if (!(next.ww > 1e-9)) delete next.ww;
       if (!next.ls || next.ls === 1) delete next.ls;
       c.doc.change('TEXTEDIT', () => c.doc.update(e.id, next));
@@ -1188,6 +1193,8 @@ def('EXPORTPOINTS', ['EXPPTS'], async (c) => {
 }, { help: () => t('cmd.exportpoints.help') });
 
 def('ALIGNPANEL', ['ALP'], (c) => { if (c.engine.host.alignPanel) c.engine.host.alignPanel(); else c.print(t('cmd.alignpanel.none')); }, { keepSelection: true, noRepeat: true, help: () => t('cmd.alignpanel.help') });
+// LASER (0.7 SU.772): the Laser panel (laser-cad.js over lib/laser's panel): layers → cut / score / engrave / fill / picture, GRBL G-code, Web Serial
+def('LASER', ['LASERCUT'], async (c) => { if (c.engine.host.laserPanel) await c.engine.host.laserPanel(); else c.print(t('cmd.laser.none')); }, { keepSelection: true, noRepeat: true, help: () => t('cmd.laser.help') });
 
 // ---- clipboard (COPYCLIP / CUTCLIP / COPYBASE / PASTECLIP / PASTEORIG) and DUPLICATE ----
 
@@ -2185,7 +2192,7 @@ def('EXPLODE', ['X'], async (c) => {
 
 // ---- dimensions ----
 
-const dimEnt = (c, e) => ent(c, { type: 'dim', text: '', st: { ...c.doc.current.dim }, ...e });
+const dimEnt = (c, e) => ent(c, { type: 'dim', text: '', st: { ...c.doc.current.dim }, ...(c.doc.current.dimstyle ? { dimstyle: c.doc.current.dimstyle } : {}), ...e });   // the current named style (dimstyles.js)
 const P = (p) => ({ x: p.x, y: p.y });
 
 /** Ask where the dimension line goes, previewing; options for text and (linear) direction. */
@@ -2339,6 +2346,114 @@ async function chain(c, baseline) {
 def('DIMCONTINUE', ['DCO', 'DIMCONT'], (c) => chain(c, false), { help: () => t('cmd.dimcontinue.chain_dimensions_each_end') });
 def('DIMBASELINE', ['DBA', 'DIMBASE'], (c) => chain(c, true), { help: () => t('cmd.dimbaseline.dimensions_stacked_one_base') });
 
+// ---- DIMSTYLE, DIMEDIT, DIMTEDIT (0.7 D7.14; dimstyles.js) ----
+
+/** The command-line form of DIMSTYLE: List / Set current / Save (the current settings under a name) / Delete / Apply / Compare. */
+async function dimStyleLine(c) {
+  const doc = c.doc;
+  const show = () => { for (const r of listStyles(doc)) c.print('  ' + (r.current ? '* ' : '  ') + r.name + '  ' + t('dimstyle.uses', { n: r.uses })); };
+  const nameOf = async (prompt, dflt) => { const v = (await c.string(prompt, dflt ? { default: dflt } : {})).trim(); return v; };
+  const fail = (r) => { if (r.error) c.print(t('dimstyle.err.' + r.error, { uses: r.uses })); return !r.error; };
+  show();
+  for (;;) {
+    const k = await c.keyword(t('cmd.dimstyle.option'), { options: [opt('R', t('cmd.dimstyle.restore')), opt('S', t('cmd.dimstyle.save')), opt('D', t('cmd.dimstyle.delete')), opt('A', t('cmd.dimstyle.apply')), opt('C', t('cmd.dimstyle.compare')), opt('N', t('cmd.dimstyle.rename')), opt('L', t('cmd.dimstyle.list'))], none: true });
+    const o = k?.option;
+    if (!o) return;
+    if (o === 'L') { show(); continue; }
+    if (o === 'R') { const n = await nameOf(t('cmd.dimstyle.name.current'), currentName(doc)); if (n && fail(setCurrent(doc, n))) c.print(t('dimstyle.now_current', { name: findName(doc, n) })); continue; }
+    if (o === 'S') { const n = await nameOf(t('cmd.dimstyle.name.save')); if (n && fail(saveStyle(doc, n, doc.current.dim, { makeCurrent: true }))) c.print(t('dimstyle.saved', { name: n })); continue; }
+    if (o === 'D') { const n = await nameOf(t('cmd.dimstyle.name')); if (n && fail(deleteStyle(doc, n))) c.print(t('dimstyle.deleted', { name: findName(doc, n) || n })); continue; }
+    if (o === 'N') { const n = await nameOf(t('cmd.dimstyle.name')); if (!n) continue; const to = await nameOf(t('dimstyle.rename.name')); if (to && fail(renameStyle(doc, n, to))) c.print(t('dimstyle.renamed', { name: to })); continue; }
+    if (o === 'A') {
+      const ids = [...c.host.selection];
+      const sel = ids.length ? new Set(ids) : await c.select(t('cmd.dimstyle.select'));
+      const n = await nameOf(t('cmd.dimstyle.name.apply'), currentName(doc));
+      if (sel.size && n) { const r = applyStyle(doc, sel, n); if (fail(r)) c.print(t('dimstyle.applied', { n: r.n, name: findName(doc, n) })); }
+      continue;
+    }
+    if (o === 'C') {
+      const a = await nameOf(t('cmd.dimstyle.name.compare1'), currentName(doc)), b = a && await nameOf(t('cmd.dimstyle.name.compare2'));
+      const A = a && styleOf(doc, a), B = b && styleOf(doc, b);
+      if (!A || !B) { c.print(t('dimstyle.err.missing')); continue; }
+      const keys = differences(A, B);
+      if (!keys.length) c.print(t('dimstyle.same'));
+      for (const key of keys) c.print('  ' + t('dimstyle.diff', { key, a: String(A[key] ?? ''), b: String(B[key] ?? '') }));
+    }
+  }
+}
+def('DIMSTYLE', ['DST', 'DDIM', 'D'], async (c) => {
+  if (c.host.dimStyleManager) { await c.host.dimStyleManager(); return; }
+  await dimStyleLine(c);
+}, { noRepeat: true, keepSelection: true, help: () => t('cmd.dimstyle.help') });
+def('-DIMSTYLE', [], (c) => dimStyleLine(c), { noRepeat: true, keepSelection: true, help: () => t('cmd.dimstyle.help') });
+
+/** The dimensions a DIMEDIT / DIMTEDIT acts on: the selection (noun-verb), else asked. */
+async function pickDims(c, prompt) {
+  const pre = [...c.host.selection].map((id) => c.doc.get(id)).filter((e) => e?.type === 'dim' && e.kind);
+  const ids = pre.length ? new Set(pre.map((e) => e.id)) : await c.select(prompt);
+  const list = [...ids].map((id) => c.doc.get(id)).filter((e) => e?.type === 'dim' && e.kind && c.doc.editable(e));
+  if (!list.length) c.print(t('cmd.dimedit.none'));
+  return list;
+}
+const changeDims = (c, label, list, fn) => { c.doc.change(label, () => { for (const e of list) { const n = fn(e); if (n) { delete n.block; c.doc.update(e.id, n); } } }); };
+
+def('DIMEDIT', ['DED', 'DIMED'], async (c) => {
+  const k = await c.keyword(t('cmd.dimedit.option'), { options: [opt('H', t('cmd.dimedit.home')), opt('N', t('cmd.dimedit.new')), opt('R', t('cmd.dimedit.rotate')), opt('O', t('cmd.dimedit.oblique'))], default: 'H' });
+  const o = k?.option || k;
+  if (o === 'N') {
+    const text = await c.string(t('cmd.dimedit.new.text'), { raw: true });
+    const list = await pickDims(c, t('cmd.dimedit.select'));
+    if (!list.length) return;
+    const v = text.trim() === '' || text.trim() === '<>' ? '' : text;
+    changeDims(c, 'DIMEDIT', list, (e) => ({ ...e, text: v }));
+    c.print(t('cmd.dimedit.done', { n: list.length }));
+    return;
+  }
+  if (o === 'R') {
+    const a = await c.angle(t('cmd.dimedit.rotate.angle'), { default: 0 });
+    const list = await pickDims(c, t('cmd.dimedit.select'));
+    if (!list.length) return;
+    changeDims(c, 'DIMEDIT', list, (e) => { const n = { ...e }; if (a) n.trot = normAngle(a); else delete n.trot; return n; });
+    c.print(t('cmd.dimedit.done', { n: list.length }));
+    return;
+  }
+  if (o === 'O') {
+    const list = await pickDims(c, t('cmd.dimedit.select'));
+    if (!list.length) return;
+    const lin = list.filter((e) => e.kind === 'linear' || e.kind === 'aligned');
+    if (lin.length < list.length) c.print(t('cmd.dimedit.oblique.only', { n: list.length - lin.length }));
+    if (!lin.length) return;
+    const a = await c.angle(t('cmd.dimedit.oblique.angle'), { none: true });
+    changeDims(c, 'DIMEDIT', lin, (e) => { const n = { ...e }; if (a === null || a === undefined || !Number.isFinite(a)) delete n.obl; else n.obl = normAngle(a); return n; });
+    c.print(t('cmd.dimedit.done', { n: lin.length }));
+    return;
+  }
+  // Home: the text goes back to where the style puts it (no rotation, no sideways move) and says what the measurement says
+  const list = await pickDims(c, t('cmd.dimedit.select'));
+  if (!list.length) return;
+  changeDims(c, 'DIMEDIT', list, (e) => { const n = { ...e, st: { ...(e.st || {}) } }; delete n.trot; delete n.st.just; return n; });
+  c.print(t('cmd.dimedit.done', { n: list.length }));
+}, { help: () => t('cmd.dimedit.help') });
+
+def('DIMTEDIT', ['DIMTED'], async (c) => {
+  const list = await pickDims(c, t('cmd.dimtedit.select'));
+  if (!list.length) return;
+  const k = await c.keyword(t('cmd.dimtedit.option'), { options: [opt('L', t('cmd.dimtedit.left')), opt('R', t('cmd.dimtedit.right')), opt('C', t('cmd.dimtedit.center')), opt('H', t('cmd.dimedit.home')), opt('A', t('cmd.dimtedit.angle'))], default: 'C' });
+  const o = k?.option || k;
+  if (o === 'A') {
+    const a = await c.angle(t('cmd.dimedit.rotate.angle'), { default: 0 });
+    changeDims(c, 'DIMTEDIT', list, (e) => { const n = { ...e }; if (a) n.trot = normAngle(a); else delete n.trot; return n; });
+  } else if (o === 'H') {
+    changeDims(c, 'DIMTEDIT', list, (e) => { const n = { ...e, st: { ...(e.st || {}) } }; delete n.trot; delete n.st.just; return n; });
+  } else {
+    const just = { L: 1, R: 2, C: 0 }[o] ?? 0;
+    const lin = list.filter((e) => e.kind === 'linear' || e.kind === 'aligned');
+    if (lin.length < list.length) c.print(t('cmd.dimtedit.linear.only', { n: list.length - lin.length }));
+    changeDims(c, 'DIMTEDIT', lin, (e) => ({ ...e, st: { ...(e.st || {}), just } }));
+  }
+  c.print(t('cmd.dimedit.done', { n: list.length }));
+}, { help: () => t('cmd.dimtedit.help') });
+
 /** Dimension settings typed at the command line, as in AutoCAD (DIMSCALE 100, DIMTXT 2.5 …). */
 const DIMVARS = { DIMSCALE: 'scale', DIMTXT: 'txt', DIMASZ: 'asz', DIMDEC: 'dec', DIMGAP: 'gap', DIMEXE: 'exe', DIMEXO: 'exo' };   // help: cmd.dimvar.<key>
 for (const [name, key] of Object.entries(DIMVARS)) {
@@ -2430,6 +2545,41 @@ def('LASSOMODE', [], async (c) => {
   if (n === 0 || n === 1) c.host.setLasso(n === 1); else c.print(t('cmd.lassomode.range'));
 }, { noRepeat: true, keepSelection: true, help: () => t('cmd.lassomode.help') });
 
+// ---- TOOLBAR / TOOLBARROWS (CP.1, GJoe2 getcadcraft/cadcraft#2): what the toolbar buttons show, and how many rows the bars use ----
+// Ctrl+F1 steps through the first, Shift+Ctrl+F1 through the second; both are also in Settings.
+def('TOOLBAR', [], async (c) => {
+  if (!c.host.setToolbarDisplay) { c.print(t('cmd.toolbar.browser')); return; }
+  const cur = c.host.getToolbarDisplay?.() || 'both';
+  const k = await c.keyword(t('cmd.toolbar.ask'), { options: [opt('B', t('set.toolbar_display.both')), opt('I', t('set.toolbar_display.icons')), opt('T', t('set.toolbar_display.labels'))], default: cur === 'icons' ? 'I' : cur === 'labels' ? 'T' : 'B' });
+  const key = String((k && k.option) || (typeof k === 'string' ? k : 'B')).toUpperCase();
+  const mode = key === 'I' ? 'icons' : key === 'T' ? 'labels' : 'both';
+  c.host.setToolbarDisplay(mode);
+  c.print(t('status.toolbar.display', { mode: t('set.toolbar_display.' + mode) }));
+}, { noRepeat: true, keepSelection: true, help: () => t('cmd.toolbar.help') });
+def('TOOLBARROWS', [], async (c) => {
+  if (!c.host.setToolbarRows) { c.print(t('cmd.toolbar.browser')); return; }
+  const cur = c.host.getToolbarRows?.() || 'auto';
+  const k = await c.keyword(t('cmd.toolbarrows.ask'), { options: [opt('A', t('set.toolbar_rows.auto')), opt('2', t('set.toolbar_rows.2')), opt('1', t('set.toolbar_rows.1'))], default: cur === 'auto' ? 'A' : cur });
+  const key = String((k && k.option) || (typeof k === 'string' ? k : 'A')).toUpperCase();
+  const mode = key === '1' ? '1' : key === '2' ? '2' : 'auto';
+  c.host.setToolbarRows(mode);
+  c.print(t('status.toolbar.rows', { rows: t('set.toolbar_rows.' + mode) }));
+}, { noRepeat: true, keepSelection: true, help: () => t('cmd.toolbarrows.help') });
+
+/** TOUR (0.7 D7.06): the six-step first drawing, again. */
+def('TOUR', ['TUTORIAL'], async (c) => { if (c.host.startTour) c.host.startTour(); else c.print(t('cmd.toolbar.browser')); }, { noRepeat: true, keepSelection: true, help: () => t('cmd.tour.help') });
+
+/** TOOLBARDOCK (0.7 D7.02): the side the toolbar sits on — Top (as it always was), Bottom, Left or Right. Also in Settings › CadCraft. */
+def('TOOLBARDOCK', ['TBDOCK'], async (c) => {
+  if (!c.host.setToolbarDock) { c.print(t('cmd.toolbar.browser')); return; }
+  const cur = c.host.getToolbarDock?.() || 'top';
+  const k = await c.keyword(t('cmd.toolbardock.ask'), { options: [opt('T', t('set.toolbar_dock.top')), opt('B', t('set.toolbar_dock.bottom')), opt('L', t('set.toolbar_dock.left')), opt('R', t('set.toolbar_dock.right'))], default: { top: 'T', bottom: 'B', left: 'L', right: 'R' }[cur] });
+  const key = String((k && k.option) || (typeof k === 'string' ? k : 'T')).toUpperCase();
+  const side = { T: 'top', B: 'bottom', L: 'left', R: 'right' }[key] || 'top';
+  c.host.setToolbarDock(side);
+  c.print(t('status.toolbar.dock', { side: t('set.toolbar_dock.' + side) }));
+}, { noRepeat: true, keepSelection: true, help: () => t('cmd.toolbardock.help') });
+
 // ---- LWDISPLAY: lineweights on screen (the status bar's LWT; view.js + lwdisplay.js) ----
 def('LWDISPLAY', ['LWT'], async (c) => {
   const st = c.host.settings;
@@ -2487,6 +2637,46 @@ def('UNITS', ['UN', 'DDUNITS'], async (c) => {
   }
 }, { noRepeat: true, keepSelection: true, help: () => t('cmd.units.help') });
 
+// ---- SCALELISTEDIT: the drawing's own scales for viewports and plots (0.7 D7.19; scales.js) ----
+
+def('SCALELISTEDIT', ['SCALELIST'], async (c) => {
+  const doc = c.doc;
+  const list = () => {
+    const own = scalesOf(doc);
+    if (!own.length) c.print(t('cmd.scalelist.none'));
+    else { c.print(t('cmd.scalelist.header', { n: own.length })); for (const s of own) c.print('  ' + scaleLine(s)); }
+  };
+  const find = async (prompt) => {
+    const typed = (await c.string(prompt)).trim();
+    const hit = scalesOf(doc).find((s) => s.name === typed) || scalesOf(doc).find((s) => s.name.toLowerCase() === typed.toLowerCase());
+    if (!hit) c.print(t('cmd.scalelist.missing', { name: typed }));
+    return hit || null;
+  };
+  const ask = async (cur = null) => {
+    const name = (await c.string(t('cmd.scalelist.name'), cur ? { default: cur.name } : {})).trim();
+    if (!name) return null;
+    const r = parseRatio(name) || (cur ? { paper: cur.paper, drawing: cur.drawing } : { paper: 1, drawing: 1 });
+    const paper = await c.number(t('cmd.scalelist.paper'), { default: r.paper });
+    const drawing = await c.number(t('cmd.scalelist.drawing'), { default: r.drawing });
+    return { name, paper, drawing };
+  };
+  const say = (r) => { if (r.error) c.print(t('cmd.scalelist.err.' + r.error)); return !r.error; };
+  list();
+  for (;;) {
+    const k = await c.keyword(t('cmd.scalelist.option'), { options: [opt('A', t('cmd.scalelist.add')), opt('E', t('cmd.scalelist.edit')), opt('D', t('cmd.scalelist.delete')), opt('L', t('cmd.scalelist.list')), opt('R', t('opt.reset'))], none: true });
+    const o = k?.option;
+    if (!o) break;
+    if (o === 'L') list();
+    else if (o === 'A') { const s = await ask(); if (s && say(addScale(doc, s))) c.print(t('cmd.scalelist.added', { name: s.name })); }
+    else if (o === 'E') { const cur = await find(t('cmd.scalelist.which')); if (cur) { const s = await ask(cur); if (s && say(editScale(doc, cur.name, s))) c.print(t('cmd.scalelist.edited', { name: s.name })); } }
+    else if (o === 'D') { const cur = await find(t('cmd.scalelist.which')); if (cur && say(deleteScale(doc, cur.name))) c.print(t('cmd.scalelist.deleted', { name: cur.name })); }
+    else if (o === 'R') {
+      const y = await c.keyword(t('cmd.scalelist.reset'), { options: [opt('Y', t('opt.yes')), opt('N', t('opt.no'))], default: 'N' });
+      if ((y?.option || y) === 'Y') { resetScales(doc); c.print(t('cmd.scalelist.reset.done')); }
+    }
+  }
+}, { noRepeat: true, help: () => t('cmd.scalelist.help') });
+
 // ---- blocks ----
 
 const validBlockName = (n) => n && !/^\*/.test(n) && !/[<>/\\":;?*|=`]/.test(n) && n.length <= 255;
@@ -2519,6 +2709,59 @@ def('BLOCK', ['B', 'BMAKE'], async (c) => {
   c.engine.lastBlock = name;
   c.print(t('cmd.block.made', { name, n: src.length }));
 }, { help: () => t('cmd.block.make_block_objects_they') });
+
+// ---- WBLOCK: a block, objects or the whole drawing written out as a drawing of its own (0.7 D7.13) ----
+
+def('WBLOCK', ['W', '-WBLOCK'], async (c) => {
+  const doc = c.doc;
+  const src = await c.keyword(t('cmd.wblock.source'), { options: [opt('B', t('opt.block')), opt('E', t('cmd.wblock.entire')), opt('O', t('cmd.wblock.objects'))], default: 'O' });
+  const what = src?.option || src;
+  let spec, name = doc.meta.name || 'Drawing', ids = null, base = { x: 0, y: 0 };
+  if (what === 'B') {
+    const names = namedBlocks(doc);
+    if (!names.length) { c.print(t('cmd.wblock.noblocks')); return; }
+    const typed = (await c.string(t('cmd.wblock.blockname'), { default: names[0] })).trim();
+    const n = doc.blocks.has(typed) ? typed : names.find((x) => x.toLowerCase() === typed.toLowerCase());
+    if (!n) { c.print(t('cmd.wblock.noblock', { name: typed })); return; }
+    spec = { block: n }; name = n;
+  } else if (what === 'E') {
+    spec = { whole: true };
+  } else {
+    base = P(await c.point(t('cmd.block.specify_insertion_base_point')));
+    ids = await c.select();
+    if (!ids.size) { c.print(t('cmd.wblock.noobjects')); return; }
+    spec = { ids, base };
+  }
+  const built = wblockDoc(doc, spec);
+  if (built.error) { c.print(t('cmd.wblock.' + (built.error === 'empty' ? 'empty' : 'noobjects'))); return; }
+  const fk = await c.keyword(t('cmd.wblock.format'), { options: [opt('D', 'DWG'), opt('X', 'DXF'), opt('R', 'DXF R12')], default: 'D' });
+  const format = { D: 'dwg', X: 'dxf2000', R: 'dxf' }[fk?.option || fk] || 'dwg';
+  const file = (await c.string(t('cmd.wblock.file'), { default: name })).trim();
+  if (!file) return;
+  let after = 'R';
+  if (what === 'O') {
+    const k = await c.keyword(t('cmd.wblock.after'), { options: [opt('R', t('cmd.wblock.retain')), opt('C', t('cmd.wblock.convert')), opt('D', t('cmd.wblock.delete'))], default: 'R' });
+    after = k?.option || k;
+  }
+  built.doc.meta.name = file.replace(/\.(dwg|dxf)$/i, '');
+  const r = await c.host.writeDrawing?.(built.doc, { name: built.doc.meta.name, format });
+  if (!r?.ok) { c.print(t('cmd.wblock.failed', { why: r?.why || '' })); return; }
+  c.print(t('cmd.wblock.done', { file: r.file, objects: t('cmd.n.objects', { n: built.count }) }));
+  if (what === 'O' && (after === 'D' || after === 'C')) {
+    const list = [...ids].map((id) => doc.get(id)).filter((e) => e && e.type !== 'viewport');
+    const bname = validBlockName(built.doc.meta.name) ? built.doc.meta.name : 'WBLOCK';
+    const clash = after === 'C' && doc.blocks.has(bname);
+    doc.change('WBLOCK', () => {
+      if (after === 'C' && !clash) {
+        const { entities: plain, attdefs } = splitAttdefs(list);
+        const blk = doc.defineBlock({ name: bname, base: P(base), entities: plain, attdefs });
+        for (const e of list) doc.remove(e.id);
+        doc.add(ent(c, { type: 'insert', block: bname, x: base.x, y: base.y, sx: 1, sy: 1, rot: 0, ...(attdefs.length ? { attrs: defaultAttrs(blk) } : {}) }));
+      } else for (const e of list) doc.remove(e.id);
+    });
+    if (clash) c.print(t('cmd.wblock.clash', { name: bname }));
+  }
+}, { help: () => t('cmd.wblock.help') });
 
 // ---- ATTDEF and the block editor (BEDIT / BCLOSE) ----
 
@@ -2643,15 +2886,15 @@ function followStates(doc, def, vr) {
     // a copy made for the state before its objects changed — moves to a copy that does (setVisibility reuses or makes one)
     const cur = map.get(e.id), st = cur.dyn.state ?? (cur.block === def ? vr.current : null);
     const want = st !== null ? doc.blocks.get(def)?.dyn?.vis?.states.find((s) => s.name === st) : null;
-    if (want && !showsState(doc.blocks.get(cur.block)?.dyn, want)) setVisibility(doc, e.id, st, map);
+    if (want && !showsState(doc.blocks.get(cur.block)?.dyn, want, doc.blocks.get(def))) setVisibility(doc, e.id, st, map);
   }
 }
 
-/** A dynamic block's shown flags are exactly a state's objects (attribute definitions aside). */
-function showsState(d, st) {
+/** A dynamic block's shown flags are exactly a state's objects, its attribute definitions too (objects no state lists aside). */
+function showsState(d, st, def) {
   if (!d || !Array.isArray(d.shown)) return true;   // nothing to compare: leave it
-  const ad = new Set(d.ad || []), on = new Set(st.show);
-  return d.shown.every((v, i) => ad.has(i) || !!v === on.has(i));
+  const free = freeObjects(def?.dyn || d), on = new Set(st.show);
+  return d.shown.every((v, i) => free.has(i) || !!v === on.has(i));
 }
 
 // ---- BVSTATE / BVHIDE / BVSHOW (0.5 DB.9; visedit.js): visibility states of a block that has them, in the block editor ----
@@ -3229,6 +3472,12 @@ def('COMPARESETTINGS', ['CMPSET'], async (c) => {
   await c.host.compareSettings();
 }, { noRepeat: true, keepSelection: true, help: () => t('cmd.cmp.help') });
 
+// ---- HISTORY (0.7 D7.31): the versions of this drawing, to open, restore and compare ----
+def('HISTORY', ['HIST'], async (c) => {
+  if (!c.host.history) { c.print(t('hist.cmd.unavailable')); return; }
+  c.host.history();   // not awaited: the panel stays open beside the drawing while commands go on (Open, Restore need the command line free)
+}, { noRepeat: true, keepSelection: true, help: () => t('hist.cmd.help') });
+
 // ---- VPLAYER (0.5 VP.2): freeze layers in some viewports only. The Layers panel's viewport column does the same for one
 // viewport; the layer flag "frozen in new viewports" (Vpvisdflt) is what MVIEW starts a viewport with. ----
 const wildRe = (pat) => new RegExp('^' + String(pat).trim().replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i');
@@ -3496,7 +3745,7 @@ def('LIST', ['LI', 'LS'], async (c) => {
   for (const id of ids) {
     const e = c.doc.get(id);
     c.print(t('cmd.list.line', { type: typeName(e), layer: e.layer, what: describe(e, unitsOf(c.doc.meta)) }));
-    if (e.type === 'insert') for (const a of attrRows(e, c.doc.blocks.get(e.block))) c.print('  ' + a.tag + ' = ' + (a.value === '' ? t('cmd.list.attr.empty') : a.value) + (a.invisible ? '  ' + t('cmd.list.attr.invisible') : '') + (a.constant ? '  ' + t('cmd.list.attr.constant') : ''));
+    if (e.type === 'insert') for (const a of attrRows(e, c.doc.blocks.get(e.block))) c.print('  ' + a.tag + ' = ' + (a.value === '' ? t('cmd.list.attr.empty') : a.value) + (a.invisible ? '  ' + t('cmd.list.attr.invisible') : a.hidden ? '  ' + t('cmd.list.attr.state_hidden') : '') + (a.constant ? '  ' + t('cmd.list.attr.constant') : ''));
   }
 }, { help: () => t('cmd.list.describe_objects_history') });
 
@@ -3550,6 +3799,10 @@ def('ZOOM', ['Z'], async (c) => {
   const b = await c.point(t('cmd.mtext.corner'), { base: a });
   c.host.zoomWindow(a, b);
 }, { help: () => t('cmd.zoom.extents_window'), noRepeat: true, keepSelection: true });
+
+// REGEN / REGENALL (0.7 CAD-REGEN): the pictures are rebuilt from the drawing (the drawing itself is not changed, no undo step)
+def('REGEN', ['RE'], async (c) => { c.host.regen?.(false); c.print(t('cmd.regen.done')); }, { help: () => t('cmd.regen.help'), noRepeat: true, keepSelection: true });
+def('REGENALL', ['REA'], async (c) => { const n = c.host.regen?.(true) ?? 0; c.print(t('cmd.regenall.done', { n })); }, { help: () => t('cmd.regen.help_all'), noRepeat: true, keepSelection: true });
 
 // ---- named views (NAMEDVIEW): kept in the drawing; the file's VIEW table once cad-files writes it ----
 

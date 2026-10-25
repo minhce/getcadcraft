@@ -22,12 +22,14 @@
 import { DIM_DEFAULTS } from './dims.js';
 import { afterEdit, resolveParametric } from './gcons.js';
 import { Model3D, split3d } from './model3d.js';
+import { cleanSolids } from './acis-cad.js';
 import { cleanPanes } from './panes.js';
 import { cleanUcs, ucsData, UCS_NAME_RE } from './ucs.js';
 
 import { t } from './i18n.js';
 import { cleanPlotStyles } from './plotstyle.js';
 import { cleanGeo } from './geodwg.js';   // 0.6 GEO-DWG
+import { keptJob } from './laser-file.js';   // 0.7 SU.772
 // Constraints and parameters (gcons.js, params-doc.js): doc.constraints [] and doc.params {vars, links} are part
 // of the undoable document — doc.setParametric({constraints, params}) inside a change replaces both. A change that
 // moves constrained geometry is re-solved before it is recorded (gcons.afterEdit); one the constraints cannot
@@ -55,6 +57,8 @@ export class Doc {
     this.textStyles = new Map();    // name → { font, h, wf, obl } — a file's text styles (STYLE table; Properties lists them; dwg-props / cad-files)
     this.dimStyles = new Map();     // name → st — a file's named dimension styles (DIMSTYLE table; a dimension's `dimstyle` names one)
     this.blocks = new Map();        // name → { name, base:{x,y}, entities[], attdefs?[] }  (attributes: geom.attrTexts)
+    this.ole = [];                  // OLE objects a DWG held that CadCraft does not show: [{ layer, flags, mode, data (base64) }], written back on save (0.7 D7.23, ole.js)
+    this.solids = [];               // other programs' 3D solids (ACIS): [{ type, layer, color, acis }], shown read-only on the 3D tab, written back on save (0.7 D7.25, acis-cad.js)
     this.nextId = 1;
     this.current = { layer: '0', color: null, textHeight: 2.5, dim: { ...DIM_DEFAULTS }, linetype: null, lineweight: null };   // null = by layer
     this.meta = { name: 'Drawing1', units: '', source: '', version: '' };
@@ -365,7 +369,7 @@ export class Doc {
   }
 
   /** Replace everything (open / new). Not undoable; the caller asks about unsaved changes first. */
-  load({ entities = [], layers = [], blocks = [], layouts = [], meta = {}, dimStyle = null, parametric = null, report = null, views = [], linetypes = [], vports = null, textStyles = null, dimStyles = null, ucs = null, viewTwist = 0, plotStyles = null, geo = null } = {}) {
+  load({ entities = [], layers = [], blocks = [], layouts = [], meta = {}, dimStyle = null, parametric = null, report = null, views = [], linetypes = [], vports = null, textStyles = null, dimStyles = null, ucs = null, viewTwist = 0, plotStyles = null, geo = null, ole = null, pictures = null, solids = null, laser = null } = {}) {
     if (this.liveHook) this.liveHook.replaced();   // another drawing replaces the live one here: the session ends for this window
     this.viewTwist = Number.isFinite(viewTwist) && Math.abs(viewTwist) <= 100 ? viewTwist : 0;
     // the file's UCS (DR.8, cad-files): { current: {x, y, ang} | null, named: [{ name, x, y, ang }] } — checked like any file data
@@ -375,6 +379,9 @@ export class Doc {
     const in3d = split3d(arguments[0]);   // 3DFACEs and CadCraft's 3D model (model3d.js) are not 2D objects
     this.vports = cleanPanes(vports);   // split screen the file was saved with (its VPORT table, panes.js shape); cadcraft.js restores it
     this.model.clear(); this.layers.clear(); this.blocks.clear();
+    this.ole = Array.isArray(ole) ? ole.filter((o) => o && typeof o.data === 'string' && o.data).slice(0, 500).map((o) => ({ layer: String(o.layer || '0'), flags: o.flags | 0, mode: o.mode | 0, data: o.data })) : [];   // kept OLE data (0.7 D7.23)
+    this.solids = cleanSolids(solids);   // kept 3D solids (0.7 D7.25)
+    if (Array.isArray(pictures)) { if (!(this.pictures instanceof Map)) this.pictures = new Map(); for (const p of pictures) if (p && p.key && p.bytes) this.pictures.set(p.key, p); }   // an object's own preview picture (ole.js)
     this.layouts = [];
     this.space = this.model;
     this.blockEdit = null;
@@ -416,6 +423,9 @@ export class Doc {
     this.meta = { name: 'Drawing1', units: '', source: '', version: '', ...meta };
     delete this.meta.plotStyles;
     if (psIn.tables.length || psIn.model) this.meta.plotStyles = { tables: psIn.tables, model: psIn.model };
+    delete this.meta.laser;
+    const lzIn = keptJob(laser ?? meta.laser);   // the Laser panel's settings kept with the drawing (0.7 SU.772, laser-file.js; untrusted)
+    if (lzIn) this.meta.laser = lzIn;
     delete this.meta.geo;
     const geoIn = cleanGeo(geo ?? meta.geo);   // the coordinate system and map layers kept with the drawing (0.6 GEO-DWG, geodwg.js; untrusted)
     if (geoIn) this.meta.geo = geoIn;
@@ -489,6 +499,6 @@ export function typeName(e) {
 }
 
 /** Object type names for people: getters, so they are read in the page's language when used (not at module load). */
-export const TYPE_NAMES = Object.fromEntries(['line', 'circle', 'arc', 'poly', 'ellipse', 'text', 'point', 'insert', 'hatch', 'dim', 'viewport', 'mleader', 'xline', 'ray']
+export const TYPE_NAMES = Object.fromEntries(['line', 'circle', 'arc', 'poly', 'ellipse', 'text', 'point', 'insert', 'hatch', 'dim', 'viewport', 'mleader', 'xline', 'ray', 'spline']
   .map((k) => [k, undefined]));
 for (const k of Object.keys(TYPE_NAMES)) Object.defineProperty(TYPE_NAMES, k, { get: () => t('type.' + k), enumerable: true });

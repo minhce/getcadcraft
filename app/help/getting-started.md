@@ -12,6 +12,10 @@ It runs in your web browser. There is nothing to install: the site gives you the
 
 If you have drafted before, read [Coming from other drafting software](topic:coming-from) after this page. Most habits carry over, and the few that do not are listed there.
 
+## Prefer to be guided?
+
+Type `TOUR` (or click {{ui:Take the tour}} on the start card, or {{ui:Settings}} › {{ui:CadCraft}} › {{ui:Take the tour again}}). Six short steps in a box over the drawing: draw a line and a circle, move it, trim it, erase something and dimension it. Each step finishes when you do it, and you can skip a step or the whole tour. It starts by itself only the first time. The [cheat sheet](topic:cheat-sheet) has the 40 commands you will use most, and the [command map](topic:command-map) every command there is.
+
 ## What you need
 
 - A recent Chrome, Edge, Firefox or Safari on a Mac, Windows or Linux computer. See [Browsers and platforms](common:browsers).

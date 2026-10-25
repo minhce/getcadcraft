@@ -15,7 +15,7 @@ Open a DWG from a consultant, check what CadCraft could and could not show, add 
 1. Press {{key:Mod+O}}, or click {{ui:Open}}.
 2. Choose the `.dwg` file.
 
-The status line shows "Reading …" while the drawing is read. When it is done, the drawing fills the screen, and the history says, for example, "Opened plan.dwg: 18,240 objects on 64 layers in 2310 ms."
+The status line shows "Reading …" while the drawing is read. When it is done, the drawing fills the screen, and the history says, for example, "Opened plan.dwg: 18,240 objects on 64 layers", with how long it took.
 
 :::offline
 You are offline. If the {{ui:Save for offline}} button reads "Offline ready", DWG files open normally. If not, and no DWG has been opened in this tab yet, opening a DWG can fail because CadCraft's DWG reader is fetched with the first DWG: open a DXF instead, or save CadCraft for offline use next time you are online. See [Working offline](common:offline).
@@ -30,7 +30,7 @@ The box lists:
 
 - **Not shown yet:** objects CadCraft cannot draw yet, by kind and count. They are left out, not guessed at.
 - **Layouts (sheets) came in:** open them with the tabs under the drawing.
-- **Splines converted to polylines**, and dimensions that could only be read as drawn.
+- **Dimensions that could only be read as drawn.**
 
 3. Click through the tabs under the drawing to see each sheet.
 4. Check {{ui:Units}} in {{ui:Current settings}} (nothing selected, {{ui:Model}} tab). If it says {{ui:Unitless}} but you know the drawing is in millimeters, set it, so that sheet and plot scales read right.
@@ -104,7 +104,7 @@ In a DXF R12:
 - The first sheet as the drawing's paper space, with its viewports. Further sheets arrive as blocks named `CCLAYOUT_1` and so on; if they need every sheet as a layout, plot PDFs of each sheet for them as well.
 - Multi-line text as separate lines, ellipses as polylines, hatches as outlines.
 
-Either way, anything listed as "Not shown yet" when you opened the DWG is **not** in the copy. Tell them, and send a PDF as well.
+Either way, anything listed as "Not shown yet" when you opened the DWG is **not** in the copy, unless the history says it was kept: a DWG's OLE objects and its 3D solids in model space are written back when you save as DWG. Tell them, and send a PDF as well.
 
 ## Common mistakes
 

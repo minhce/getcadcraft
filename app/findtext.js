@@ -15,6 +15,8 @@
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** The search as a RegExp (global), or null when there is nothing to find. */
+import { withPlain } from './mtext.js';
+
 export function findRegExp({ find, matchCase = false, whole = false, wildcard = false }) {
   const f = String(find ?? '');
   if (!f) return null;
@@ -62,7 +64,7 @@ export function applyMatches(doc, matches) {
       else if (m.kind === 'attr') next.attrs = { ...next.attrs, [m.tag]: m.after };
     }
     if (m0(next) === '') continue;
-    doc.update(id, next);
+    doc.update(id, e.type === 'text' ? withPlain(e, next) : next);
     n++;
   }
   return n;

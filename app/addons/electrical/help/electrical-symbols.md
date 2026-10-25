@@ -3,7 +3,7 @@ title: Electrical symbols
 summary: The symbols Electrical draws in the IEC 60617 set and the ANSI / NFPA 79 set, what each connection is called, and how to switch sets.
 section: reference
 order: 60
-keywords: electrical, symbols, iec 60617, ansi, jic, nfpa 79, elstandard, contact, coil, fuse, breaker, motor, lamp, terminal, plc, earth, transformer, block, attributes
+keywords: electrical, symbols, iec 60617, ansi, jic, nfpa 79, elstandard, contact, coil, fuse, breaker, rcd, rcbo, residual current, motor, lamp, terminal, plc, earth, transformer, block, attributes
 ---
 
 ## Two sets
@@ -17,7 +17,7 @@ New symbols use the set chosen in {{ui:Settings}} › {{ui:CadCraft}} › {{ui:E
 | Contacts | make contact 13-14, break contact 21-22, changeover 11-12-14, delayed make contact 67-68, three-pole main contact 1-2, 3-4, 5-6 |
 | Switches and buttons | pushbutton make 13-14, pushbutton break 11-12, selector switch, manual switch, limit switch |
 | Coils | relay or contactor coil A1-A2, timer coil on delay, timer coil off delay |
-| Protection and switching | fuse, circuit breaker, three-pole breaker, motor protection breaker, thermal overload relay, disconnector |
+| Protection and switching | fuse, circuit breaker, three-pole breaker, motor protection breaker, thermal overload relay, disconnector, residual-current device (two or four poles), RCBO (residual current with overcurrent protection) |
 | Motors, lamps and loads | three-phase motor U V W, DC motor, signal lamp X1-X2, horn, transformer |
 | Terminals and earth | terminal (its number), protective earth |
 | PLC | input and output points (with an address) |

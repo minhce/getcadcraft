@@ -46,7 +46,7 @@ export const CLIP_LIMITS = Object.freeze({
   depth: 6,             // nesting inside an entity
 });
 
-const TYPES = new Set(['line', 'circle', 'arc', 'poly', 'ellipse', 'text', 'point', 'insert', 'hatch', 'dim', 'mleader', 'xline', 'ray']);
+const TYPES = new Set(['line', 'circle', 'arc', 'poly', 'ellipse', 'text', 'point', 'insert', 'hatch', 'dim', 'mleader', 'xline', 'ray', 'spline']);
 const KEY_RE = /^[A-Za-z][A-Za-z0-9_]{0,31}$/;
 const BAD_KEYS = new Set(['constructor', 'prototype', 'toString', 'valueOf', 'hasOwnProperty']);
 const NAME_RE = /^[^<>/\\":;?*|=`\u0000-\u001f]{1,255}$/;   // a block name, after an anonymous block's leading "*"

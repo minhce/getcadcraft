@@ -47,7 +47,10 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'cc3d-'));
 
 // ---------------------------------------------------------------------------
 section('Kernel copies');
-const KERNEL = ['vec.js', 'model.js', 'earcut.js', 'camera.js', 'infer.js', 'tools.js', 'collide.js', 'sun.js', 'units.js', 'view3d.js', 'io.js', 'xml.js', 'strokefont.js', 'viewcube.js', 'viewcube-camera.js', 'viewimage.js'];
+// the kernel's files: the list the m3d sync writes (node tools/modelcraft-test/m3d-sync.mjs, 0.7), else the 0.6 list
+const KERNEL_LIST = path.join(path.dirname(fileURLToPath(import.meta.url)), '../tools/modelcraft-test/m3d-files.json');
+const KERNEL = fs.existsSync(KERNEL_LIST) ? JSON.parse(fs.readFileSync(KERNEL_LIST, 'utf8')).files
+  : ['vec.js', 'model.js', 'earcut.js', 'camera.js', 'infer.js', 'tools.js', 'collide.js', 'sun.js', 'units.js', 'view3d.js', 'io.js', 'xml.js', 'strokefont.js', 'viewcube.js', 'viewcube-camera.js', 'viewimage.js'];
 {
   const dir = path.join(APP, 'm3d');
   // in a one-app clone (npm test) ModelCraft is not there: then only that the copies exist is checked

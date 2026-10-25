@@ -382,6 +382,8 @@ export class Workspace3D {
     if (l) { bb = bboxAdd(bb, l.min); bb = bboxAdd(bb, l.max); }
     const c = this.cloudBox?.();   // a point cloud (0.5 SG.1, ws3d.js)
     if (c) { bb = bboxAdd(bb, c.min); bb = bboxAdd(bb, c.max); }
+    const s = this.solidsBox?.();   // other programs' 3D solids (0.7 D7.25, ws3d.js)
+    if (s) { bb = bboxAdd(bb, s.min); bb = bboxAdd(bb, s.max); }
     return bb;
   }
   /**

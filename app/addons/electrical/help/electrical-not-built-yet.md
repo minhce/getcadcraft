@@ -13,4 +13,5 @@ keywords: electrical, not built, missing, limits, roadmap, cross-sheet, potentia
 - **Cable cores by colour or number.** The cable list numbers cores in the order the mark crosses them.
 - **Voltage drop and cable sizing.** The panel schedule gives current and length, not the voltage drop or the cable size.
 - **Installation symbols in 3D.** Plan symbols are 2D.
+- **RCDs in the schematic's logic.** A residual-current device is a symbol and a line of text on a circuit; the add-on does not check which circuits it protects, its type (A, F, B), its selectivity or its trip time. Fire detection is symbols only: no loops, addresses or zones.
 - **Other languages.** The words are in a language file, but only English is written so far.

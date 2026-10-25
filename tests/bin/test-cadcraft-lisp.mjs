@@ -618,5 +618,40 @@ section('Aliases from one text file');
   ok(!findCmd('QQ') && findCmd('L')?.name === 'LINE', 'REINIT with an empty file takes them back; built-in L stays');
 }
 
+// ---------------------------------------------------------------------------
+section('acad.lsp / acaddoc.lsp from a support folder, S::STARTUP (0.7 D7.28)');
+{
+  const { readSupportFiles, bridgeFolder } = await load('lisp/support.js');
+  const enc = (s) => new TextEncoder().encode(s);
+  const files = new Map([['ACAD.LSP', enc('(setq order (list "acad")) (defun c:fromacad () (princ "a") (princ))')], ['AcadDoc.lsp', enc('(setq order (append order (list "doc"))) (defun S::STARTUP () (setq ran (1+ (if ran ran 0))))')], ['other.lsp', enc('(setq nope T)')], ['big', enc('x')]]);
+  const folder = { async list() { return [...files.keys()]; }, async read(n) { return files.get(n); } };
+  const r = await readSupportFiles(folder);
+  ok(r.files.map((f) => f.name).join() === 'ACAD.LSP,AcadDoc.lsp' && r.files.every((f) => f.startup), 'only acad.lsp then acaddoc.lsp are read, whatever the case of the names; nothing else in the folder', r.files.map((f) => f.name).join());
+  const only = await readSupportFiles(folder, ['acaddoc.lsp']);
+  ok(only.files.length === 1 && only.files[0].name === 'AcadDoc.lsp', 'a run for a new drawing reads acaddoc.lsp only');
+  files.set('acad.lsp', new Uint8Array(3 * 1024 * 1024));
+  const big = await readSupportFiles({ async list() { return ['acad.lsp']; }, async read(n) { return files.get(n); } });
+  ok(big.files.length === 0 && big.notes[0]?.why === 'size', 'a file over 2 MB is skipped with a note');
+  ok((await readSupportFiles({ async list() { throw new Error('gone'); }, async read() {} })).notes[0]?.why === 'read', 'an unreadable folder gives a note, not an error');
+  const calls = [];
+  const br = bridgeFolder({ listDir: async (p) => { calls.push('list ' + p); return [{ name: 'acad.lsp', dir: false }, { name: 'sub', dir: true }]; }, readFile: async (p) => { calls.push('read ' + p); return enc('(princ)'); } }, 'C:\\Support');
+  ok((await br.list()).join() === 'acad.lsp' && (await br.read('acad.lsp')).length === 7 && calls[1] === 'read C:\\Support\\acad.lsp', 'the bridge folder lists files only and joins paths with the folder\'s own separator', calls.join(' | '));
+  ok(bridgeFolder(null, 'x') === null, 'no bridge (the browser): no folder');
+  // loaded through the real hidden command: order, commands, then S::STARTUP once
+  if (realInstalled) {
+    const h = harness();
+    const ctx = installLisp.ctx;
+    const set = new Map([...files]); set.set('acad.lsp', enc('(setq order (list "acad")) (defun c:fromacad () (princ "a") (princ))'));
+    const got = await readSupportFiles({ async list() { return [...set.keys()]; }, async read(n) { return set.get(n); } });
+    await ctx.runHidden(h.eng, '_LISPLOAD', 'APPLOAD', { kind: 'load', files: got.files, startup: true });
+    const o = await lisp(h, 'order');
+    ok(o.ok && /"acad" "doc"/.test(o.text), 'acad.lsp is loaded before acaddoc.lsp', o.text);
+    ok((await lisp(h, 'ran')).text === '1', 'S::STARTUP defined in acaddoc.lsp ran once after the files', (await lisp(h, 'ran')).text);
+    ok(!!findCmd('FROMACAD'), 'a c: command from acad.lsp is a command');
+    await ctx.runHidden(h.eng, '_LISPLOAD', 'APPLOAD', { kind: 'load', files: [{ name: 'x.lsp', text: '(setq y 1)', kind: 'lsp' }] });
+    ok((await lisp(h, 'ran')).text === '1', 'a plain APPLOAD does not run S::STARTUP again');
+  }
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

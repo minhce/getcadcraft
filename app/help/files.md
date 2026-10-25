@@ -12,7 +12,7 @@ keywords: xclip, clip, xclip boundary, bind clipped, dwg, dxf, pdf, r12, open, s
 |---|---|---|---|
 | DXF (text, any version) | Yes | Yes, as DXF R12 or DXF 2000 | Binary DXF is refused: save it as text DXF first. |
 | DWG | Yes | Yes, as DWG (AutoCAD 2000, 2004, 2007, 2010, 2013 or 2018) | Read and written by CadCraft's own DWG library (AutoCAD R13 to 2018 files). Your DWG is never changed. Damaged files, or versions the reader does not handle, are refused with a message. |
-| PDF | No | Yes, by plotting | Vector PDF of a sheet, or of the model at a scale. |
+| PDF | Brings a page in: as an underlay or as objects ([PDF underlays](topic:pdf-underlay)) | Yes, by plotting | Vector PDF of a sheet, or of the model at a scale. |
 
 Each drawing you open (or start with {{ui:New}}) gets its own tab over the drawing area; a new drawing nobody has touched yet is used instead of adding a tab. Click a tab to switch, its {{ui:×}} to close it (CadCraft asks first if there are unsaved changes), or tile the open drawings side by side: see [Split the screen](topic:split-screen).
 
@@ -28,9 +28,9 @@ The DWG reader is part of CadCraft and is fetched with the first DWG you open af
 ### What comes in
 
 - Lines, arcs, circles, polylines (with arc segments), ellipses, points, text and multi-line text, solids, hatches (the standard patterns drawn as their lines, others as a flat tone), block references with their attributes (values you can edit; see [Block attributes](topic:attributes)), dimensions, and layouts with their viewports.
-- Splines come in as polylines that follow the curve.
+- Splines come in as splines (degree, control points, knots, weights, fit points); see [Splines and polylines](topic:splines).
 - Multileaders with one leader line and text come in as CadCraft multileaders you can edit (see {{cmd:MLEADER}}). Others (with a block, several leader lines or curved lines) are drawn as the other program drew them and move as one; the history says how many.
-- Pictures (images) show as a frame with the picture's file name: CadCraft does not show the picture itself yet. Wipeouts show as their frame, and what is under them stays visible.
+- Pictures (images) show as a frame with the picture's file name until you give CadCraft the file with {{cmd:IMAGE}}: see [Pictures in a drawing](topic:pictures#show-the-pictures-a-dwg-uses). Wipeouts show as their frame, and what is under them stays visible.
 - Tables in a DWG come in as the other program drew them.
 - 3D faces in model space come in on the {{ui:3D}} tab, not as 2D objects; so do those inside blocks, once per block reference in the model. In a block and on a sheet they are also drawn flat, as outlines. See [Model in 3D](topic:3d-solids).
 - Layers keep their color, on, frozen, locked and plot settings. DEFPOINTS never plots.
@@ -39,7 +39,7 @@ The DWG reader is part of CadCraft and is fetched with the first DWG you open af
 
 ### What does not come in yet
 
-Anything CadCraft cannot draw is counted, not guessed at. The "About this file" box in the left panel lists it as "Not shown yet:" followed by each kind of object and how many. Typical cases are tables in a DXF, and 3D solids, regions and meshes. Viewports twisted in the file show turned, as there, and keep their twist when you save; so do the current UCS, the named UCSs and a turned view.
+Anything CadCraft cannot draw is counted, not guessed at. The "About this file" box in the left panel lists it as "Not shown yet:" followed by each kind of object and how many. Typical cases are tables in a DXF, meshes, and 3D solids inside blocks. 3D solids, regions and bodies in model space show on the 3D tab (see [Model in 3D](topic:3d-solids#solids-from-other-programs)). Viewports twisted in the file show turned, as there, and keep their twist when you save; so do the current UCS, the named UCSs and a turned view.
 
 Text is drawn in one Helvetica-style font. A label that fits on one line in the original program's narrower font can wrap onto two lines in CadCraft.
 
@@ -141,7 +141,7 @@ Every save and every plot is a download, so files land wherever your browser put
 
 Nothing you open or save is sent to us. See [Where your files go](common:your-files).
 
-## Archicad projects
+## PLN and PLA project files
 
 CadCraft opens DWG and DXF drawings, not Archicad's own files (`.pln`, `.pla`, `.tpl`, `.bpn`). Opening one tells you what it is. In Archicad, save the views or layouts you need as DWG and open those here, or export the model as IFC and open it in BimCraft. Where BimCraft can take the file over, CadCraft offers {{ui:Open in BimCraft}}.
 

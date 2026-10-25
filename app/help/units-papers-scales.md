@@ -79,6 +79,8 @@ A scale `1:n` means one unit on paper shows n of the same unit in the model, so 
 
 **Engineering scales**, offered when the units are inches or feet: 1" = 10', 1" = 20', 1" = 30', 1" = 40', 1" = 50', 1" = 100'.
 
+**Your own scales.** Type `SCALELISTEDIT` (or `SCALELIST`) to add a scale of your own, such as 1:75 or a site scale of 2 paper : 300 drawing. `Add` asks for a name, then the paper units and the drawing units (a name like `1:75` offers its own numbers; press {{key:Enter}} to take them). `Edit`, `Delete`, `List` and `Reset` work on the same list; `Reset` goes back to the standard list. Your scales appear after the standard ones in the viewport scale list of Properties and in the {{ui:Plot to PDF}} dialog, a viewport at that scale reads with its name, and they are saved in the drawing (DWG and DXF 2000) as the drawing's scale list. A drawing opened from another program brings its list in; scales it has that match a standard one are not shown twice.
+
 When a viewport is aimed with {{ui:Show the whole model}} or {{ui:Pick a window on the model…}}, CadCraft picks the largest standard scale that fits. {{ui:Fit the whole model}} sets an exact scale instead, which reads as a plain ratio.
 
 ## Sizes on paper and in the model

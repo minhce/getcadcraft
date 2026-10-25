@@ -3,7 +3,7 @@ title: Model in 3D
 summary: See the drawing in 3D on the 3D tab and make simple solids from it: extrude (with a taper or along a path), revolve, push and pull faces, boxes, cylinders and wedges, join, subtract and intersect them, then move, copy, rotate and erase them, and place flat 2D views of them on a sheet.
 section: tasks
 order: 128
-keywords: 3d, three d, solid, solids, extrude, ext, revolve, rev, sweep, taper, path, presspull, press pull, push pull, box, cylinder, cyl, wedge, 3dorbit, orbit, view, vscurrent, visual style, shaded, hidden line, wireframe, x-ray, xray, iso, perspective, parallel, glb, gltf, obj, stl, export3d, stlout, objout, glbout, 3dface, view cube, union, uni, subtract, su, intersect, in, boolean, combine, join solids, viewbase, flatshot, flat view, 2d view, drawing view, front view, top view, side view, hidden lines
+keywords: 3d, three d, solid, solids, 3dsolid, region, body, acis, sat, sab, solids from other programs, open 3d drawing, extrude, ext, revolve, rev, sweep, taper, path, presspull, press pull, push pull, box, cylinder, cyl, wedge, 3dorbit, orbit, view, vscurrent, visual style, shaded, hidden line, wireframe, x-ray, xray, iso, perspective, parallel, glb, gltf, obj, stl, export3d, stlout, objout, glbout, 3dface, view cube, union, uni, subtract, su, intersect, in, boolean, combine, join solids, viewbase, flatshot, flat view, 2d view, drawing view, front view, top view, side view, hidden lines
 ---
 
 ## What you will make
@@ -83,6 +83,17 @@ Drag with the wheel to orbit, {{key:Shift}} + wheel drag or the right button to 
 Points you click snap to the solids (corners, edges, faces) and to the 2D drawing on the ground: the ends and middles of its lines and arcs, and points along them. The 2D lines are never selected on the 3D tab. When a command asks for 2D objects (EXTRUDE, REVOLVE, SWEEP), a click picks one, a drag left to right takes what is wholly inside the window, and a drag right to left takes what it crosses, as on the {{ui:Model}} tab.
 
 A view cube sits at the top right of the 3D tab: click a face, edge or corner to look from there, drag it to orbit, and the house button goes back to the iso view. That is {{ui:Automatic}}, the start of {{ui:Corner indicator}} in [CadCraft settings](topic:settings). Set to {{ui:View cube}}, the {{ui:Model}} tab shows a cube too, looking from the top; clicking any other side opens the 3D tab looking from there. Set to {{ui:Axis icon}}, both tabs show the axis marker instead.
+
+## Solids from other programs
+
+A drawing from another program can hold 3D solids, regions and bodies (3DSOLID, REGION, BODY: the other program keeps their shape as ACIS data). CadCraft shows the ones in model space on the 3D tab, in their layer's colour and with their own edges, the first time you open the tab; the command line then says how many were drawn.
+
+- They show as they are: you cannot select, move or change them. Layers that are off or frozen hide them.
+- Saving as DWG writes each one back unchanged, in any DWG version, so the other program gets them again. DXF files do not keep them: CadCraft writes them into DWG only, and says so when you save as DXF.
+- Drawn: flat faces, and faces on cylinders, cones, spheres, tori and simple spline surfaces, with straight, round and spline edges. A face on any other kind of surface, or one CadCraft cannot lay out, is not guessed at: it is left out and listed, for example "Not drawn yet (3D solids): 2 faces on spline-surface (sweepsur), a surface not drawn yet."
+- Solids inside blocks are not shown yet; "About this file" counts them.
+
+Curved faces are drawn as small flat pieces, about 7.5° apart, so a curved solid looks a little faceted up close.
 
 ## Save and export
 

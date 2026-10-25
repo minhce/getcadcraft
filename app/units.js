@@ -15,6 +15,8 @@
 
 import { t } from './i18n.js';
 import { calc, hasArithmetic } from './lencalc.js';   // 0.6 DF.3: + - * / and brackets over typed lengths
+import { parseTo } from './unit-table.js';   // 0.7 UNITS: the shared table (lib/units; a copy: tools/units/sync.mjs)
+import { starOf } from './unit-prefs.js';
 
 export const LUNITS = Object.freeze({ 1: 'Scientific', 2: 'Decimal', 3: 'Engineering', 4: 'Architectural', 5: 'Fractional' });
 export const DEFAULT_PREC = Object.freeze({ 1: 4, 2: 4, 3: 4, 4: 4, 5: 4 });
@@ -93,7 +95,8 @@ function mixed(t) {
  * (12', 12'6", 12'-6-1/2", 6") when the drawing's format is engineering or architectural, as AutoCAD reads them; a
  * number with a unit (450mm, 3.5m, 2ft, 6in) when the drawing's units are known (`units` = doc.meta.units; a unitless
  * drawing in feet and inches counts as inches); and arithmetic over those (0.6 DF.3, lencalc.js): 4+7/16, 12'6"+3/4",
- * (24'-0")/3, 2*450mm. readLength says why one is refused.
+ * (24'-0")/3, 2*450mm; since 0.7 UNITS also every other length mark of the shared table (lib/units: 3 yd, 2 ch,
+ * 10 US ft, 1.5 km), when the drawing's units are known. readLength says why one is refused.
  */
 export function parseLength(raw, lunits = 2, units = '') {
   const r = readLength(raw, lunits, units);
@@ -113,9 +116,24 @@ function lengthAtom(s, lunits, units) {
   const v = parseOne(s, lunits);
   if (v !== null) return { value: v, unit: /['"]/.test(s) };
   const m = /^((?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?)\s*(mm|cm|m|in|inch|inches|ft|foot|feet)$/i.exec(String(s).trim());
-  const per = m && mmPerDrawingUnit(lunits, units);
-  return per ? { value: m[1] * SUFFIX_MM[m[2].toLowerCase()] / per, unit: true } : null;
+  const per = mmPerDrawingUnit(lunits, units);
+  if (m) return per ? { value: m[1] * SUFFIX_MM[m[2].toLowerCase()] / per, unit: true } : null;
+  // every other length mark of the shared table (0.7 UNITS): 3 yd, 2 ch, 10 US ft, 1.5 km, 400 nm — when the drawing's units are known
+  if (!per || /['"]/.test(s)) return null;
+  const to = DRAWING_ID[String(units || '').toLowerCase()];   // straight into the drawing's unit: one rounding
+  const r = parseTo(s, 'length', to || 'mm');
+  return r.ok ? { value: to ? r.value : r.value / per, unit: true } : null;
 }
+const DRAWING_ID = { millimeters: 'mm', centimeters: 'cm', meters: 'm', inches: 'in', feet: 'ft', decimeters: 'dm', kilometers: 'km', miles: 'mi', yards: 'yd', microns: 'um', mils: 'mil', '': 'in' };
+
+/** The table's length units that a drawing's $INSUNITS can name in CadCraft (dxf.js / dwg-save.js write codes 1–10). */
+const INS_NAME = { in: 'inches', 'ft-in': 'inches', ft: 'feet', mi: 'miles', mm: 'millimeters', cm: 'centimeters', m: 'meters', km: 'kilometers', mil: 'mils', yd: 'yards' };
+/**
+ * The units of a new drawing (0.7 UNITS): the length unit starred in Settings › General › Units when a drawing can carry
+ * it ($INSUNITS; feet and inches → inches, one drawing unit is one inch), else none — as before. An opened drawing keeps
+ * its own.
+ */
+export const newDrawingUnits = () => INS_NAME[starOf('length')] || '';
 
 /** A typed length → { ok: true, value } | { ok: false, code, pos, text } (lencalc.js codes; calcMessage words them). */
 export function readLength(raw, lunits = 2, units = '') {

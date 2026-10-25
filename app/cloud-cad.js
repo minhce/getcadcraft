@@ -6,6 +6,7 @@
  *   POINTCLOUDATTACH (PCATTACH)  pick a LAS / LAZ / XYZ / PTS / PLY / PCD / PTX file (host.pickCloud), then where: Enter = the file's own
  *                                coordinates (a scan registered to the project lines up with the drawing), or a point
  *                                for the cloud's lower-left corner
+ *   REGISTERSCANS (REGSCAN)      Register several scans in one frame (0.7 LC.3): picked point pairs or targets, ICP, LAS / E57 out (register-ui.js)
  *   POINTCLOUD (PC)              Slice (a plan cut to trace from: on / off; on at attach for a building-size scan) · Height (of the cut, above the cloud's lowest
  *                                point) · Thickness · Color (file / height / intensity / class / one) · Size · Visible ·
  *                                Zoom (to the cloud) · Detach — Enter ends
@@ -252,3 +253,8 @@ def('POINTCLOUD', ['PC'], async (c) => {
     else if (k === 'D') { const name = pc.cloud.name; pc.detach(); c.print(t('pc.detached', { file: name })); return; }
   }
 }, { noRepeat: true, keepSelection: true, help: () => t('pc.help.cmd') });
+
+def('REGISTERSCANS', ['REGSCAN', 'SCANREG'], async (c) => {   // 0.7 LC.3 (session scans): register-ui.js, the same dialog as BimCraft's
+  if (!c.host.registerScans) { c.print(t('pc.nobrowser')); return; }
+  await c.host.registerScans();
+}, { noRepeat: true, keepSelection: true, help: () => t('reg.help.cmd') });

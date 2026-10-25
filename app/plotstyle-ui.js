@@ -7,7 +7,8 @@
  *   installPlotStyles({ root, doc, host, el, t, print, colorLabel, aciHex, pickFile })
  *     sets host.plotStyles(name?) → Promise<string | null> (the table chosen last, or null when cancelled)
  */
-import { BUILTIN, LINEWEIGHTS, builtinTable, findTable, penOf, setPens, cleanTable, exportTable, readTableFile, MAX_TABLES } from './plotstyle.js';
+import { BUILTIN, LINEWEIGHTS, CAPS, JOINS, FILLS, builtinTable, findTable, penOf, setPens, cleanTable, exportTable, readTableFile, MAX_TABLES } from './plotstyle.js';
+import { linetypeNames } from './linetypes.js';
 
 export function installPlotStyles({ root, doc, host, el, t, print, colorLabel, aciHex, pickFile }) {
   const label = (name) => (BUILTIN.includes(name) ? t('plotstyle.builtin.' + name) : name);
@@ -25,9 +26,12 @@ export function installPlotStyles({ root, doc, host, el, t, print, colorLabel, a
     const btn = (key, text, title = '') => el('button', { type: 'button', className: 'btn-line btn-sm-cc', dataset: { psAct: key }, title }, text);
     const bar = el('div', { className: 'cc-ps-bar' }, el('label', { htmlFor: 'cc-ps-table' }, t('plotstyle.table')), tableSel,
       btn('new', t('plotstyle.new')), btn('copy', t('plotstyle.copy')), btn('import', t('plotstyle.import'), t('plotstyle.import.title')), btn('export', t('plotstyle.export')), btn('delete', t('plotstyle.delete')));
+    const lwListIn = el('input', { type: 'text', className: 'cc-input', id: 'cc-ps-lwlist', placeholder: t('plotstyle.lwlist.placeholder'), dataset: { psLwlist: '' } });
+    const ltScaleIn = el('input', { type: 'number', className: 'cc-input', id: 'cc-ps-ltscale', min: '0.01', max: '100', step: 'any', dataset: { psLtscale: '' } });
     const nameIn = el('input', { type: 'text', className: 'cc-input', id: 'cc-ps-name', maxLength: 64, dataset: { psName: '' } });
     const descIn = el('input', { type: 'text', className: 'cc-input', id: 'cc-ps-desc', maxLength: 255 });
-    const meta = el('div', { className: 'cc-props cc-ps-meta' }, el('label', { htmlFor: 'cc-ps-name' }, t('plotstyle.name')), nameIn, el('label', { htmlFor: 'cc-ps-desc' }, t('plotstyle.description')), descIn);
+    const meta = el('div', { className: 'cc-props cc-ps-meta' }, el('label', { htmlFor: 'cc-ps-name' }, t('plotstyle.name')), nameIn, el('label', { htmlFor: 'cc-ps-desc' }, t('plotstyle.description')), descIn,
+      el('label', { htmlFor: 'cc-ps-lwlist', title: t('plotstyle.lwlist.title') }, t('plotstyle.lwlist')), lwListIn, el('label', { htmlFor: 'cc-ps-ltscale', title: t('plotstyle.ltscale.title') }, t('plotstyle.ltscale')), ltScaleIn);
     const ro = el('p', { className: 'cc-note', dataset: { psReadonly: '' } }, t('plotstyle.readonly'));
     const grid = el('div', { className: 'cc-ps-grid', role: 'listbox', 'aria-multiselectable': 'true', 'aria-label': t('plotstyle.colours') });
     const cells = [];
@@ -50,12 +54,21 @@ export function installPlotStyles({ root, doc, host, el, t, print, colorLabel, a
     const screenIn = el('input', { type: 'number', className: 'cc-input', id: 'cc-ps-screen', min: '0', max: '100', step: '1', dataset: { psScreen: '' } });
     const lwSel = el('select', { className: 'cc-select', id: 'cc-ps-lw', dataset: { psLw: '' } }, el('option', { value: '' }, t('plotstyle.lw.object')),
       ...LINEWEIGHTS.map((w) => el('option', { value: String(w) }, w.toFixed(2) + ' mm')));
+    // 0.7 DC.14, the rest: linetype, line end, line join, fill style (per pen); lineweight list and linetype scale (per table)
+    const ltSel = el('select', { className: 'cc-select', id: 'cc-ps-lt', dataset: { psLt: '' } }, el('option', { value: '' }, t('plotstyle.lt.object')), ...linetypeNames(doc).map((n) => el('option', { value: n }, n)));
+    const capSel = el('select', { className: 'cc-select', id: 'cc-ps-cap', dataset: { psCap: '' } }, el('option', { value: '' }, t('plotstyle.cap.object')), ...CAPS.map((c) => el('option', { value: c }, t('plotstyle.cap.' + c))));
+    const joinSel = el('select', { className: 'cc-select', id: 'cc-ps-join', dataset: { psJoin: '' } }, el('option', { value: '' }, t('plotstyle.join.object')), ...JOINS.map((c) => el('option', { value: c }, t('plotstyle.join.' + c))));
+    const fillSel = el('select', { className: 'cc-select', id: 'cc-ps-fill', dataset: { psFill: '' } }, el('option', { value: '' }, t('plotstyle.fill.object')), ...FILLS.filter((f) => f !== 'solid').map((c) => el('option', { value: c }, t('plotstyle.fill.' + c))));
     const penHead = el('p', { className: 'cc-props-sub', 'aria-live': 'polite' });
     const pen = el('div', { className: 'cc-props cc-ps-pen' }, penHead,
       el('label', { htmlFor: 'cc-ps-color' }, t('plotstyle.color')), el('div', { className: 'cc-row' }, colorSel, colorIn),
       el('label', { htmlFor: 'cc-ps-gray' }, t('plotstyle.gray')), el('span', { className: 'cc-pbool' }, grayIn),
       el('label', { htmlFor: 'cc-ps-screen', title: t('plotstyle.screen.title') }, t('plotstyle.screen')), screenIn,
-      el('label', { htmlFor: 'cc-ps-lw' }, t('plotstyle.lw')), lwSel);
+      el('label', { htmlFor: 'cc-ps-lw' }, t('plotstyle.lw')), lwSel,
+      el('label', { htmlFor: 'cc-ps-lt' }, t('plotstyle.lt')), ltSel,
+      el('label', { htmlFor: 'cc-ps-cap' }, t('plotstyle.cap')), capSel,
+      el('label', { htmlFor: 'cc-ps-join' }, t('plotstyle.join')), joinSel,
+      el('label', { htmlFor: 'cc-ps-fill' }, t('plotstyle.fill')), fillSel);
     const body = el('div', { className: 'cc-ps-body' }, bar, meta, ro, el('div', { className: 'cc-ps-main' }, el('div', {}, grid, allBtn), pen));
     const head = el('div', { className: 'cc-plot-head' }, el('h2', { className: 'cc-h', id: 'cc-ps-title' }, t('plotstyle.title')));
     const foot = el('div', { className: 'cc-plot-foot' }, note,
@@ -84,13 +97,15 @@ export function installPlotStyles({ root, doc, host, el, t, print, colorLabel, a
       grayIn.checked = same('gray') && first.gray; grayIn.indeterminate = !same('gray');
       screenIn.value = same('screen') ? String(first.screen) : '';
       lwSel.value = same('lw') && first.lw !== null ? String(first.lw) : '';
-      for (const x of [colorSel, colorIn, grayIn, screenIn, lwSel]) x.disabled = !editable();
+      for (const [sel2, key] of [[ltSel, 'lt'], [capSel, 'cap'], [joinSel, 'join'], [fillSel, 'fill']]) sel2.value = same(key) && first[key] !== null ? first[key] : '';
+      for (const x of [colorSel, colorIn, grayIn, screenIn, lwSel, ltSel, capSel, joinSel, fillSel]) x.disabled = !editable();
     };
     const render = () => {
       tableSel.replaceChildren(...[...BUILTIN, ...tables.map((x) => x.name)].map((n) => el('option', { value: n, selected: n === name }, label(n))));
       const tb = current();
       nameIn.value = editable() ? tb.name : label(tb.name); descIn.value = tb.description || '';
-      nameIn.disabled = descIn.disabled = !editable();
+      lwListIn.value = (tb.lwList || []).join(', '); ltScaleIn.value = tb.ltScale ? String(tb.ltScale) : '';
+      nameIn.disabled = descIn.disabled = lwListIn.disabled = ltScaleIn.disabled = !editable();
       ro.hidden = editable();
       for (const k of ['delete']) bar.querySelector(`[data-ps-act="${k}"]`).disabled = !editable();
       markCells(); renderPen();
@@ -105,6 +120,20 @@ export function installPlotStyles({ root, doc, host, el, t, print, colorLabel, a
     grayIn.addEventListener('change', () => patchPens({ gray: grayIn.checked }));
     screenIn.addEventListener('change', () => { const v = Number(screenIn.value); if (Number.isFinite(v) && v >= 0 && v <= 100) patchPens({ screen: Math.round(v) }); else { renderPen(); say(t('plotstyle.screen.bad')); } });
     lwSel.addEventListener('change', () => patchPens({ lw: lwSel.value === '' ? null : Number(lwSel.value) }));
+    for (const [sel2, key] of [[ltSel, 'lt'], [capSel, 'cap'], [joinSel, 'join'], [fillSel, 'fill']]) sel2.addEventListener('change', () => patchPens({ [key]: sel2.value === '' ? null : sel2.value }));
+    lwListIn.addEventListener('change', () => {   // the table's own lineweights: numbers in mm, comma or space apart; empty = the standard list
+      const list = lwListIn.value.split(/[\s,;]+/).filter(Boolean).map((v) => Number(v.replace(',', '.')));
+      const r = cleanTable({ ...current(), lwList: list });
+      if (!r.ok || list.some((v) => !Number.isFinite(v) || v < 0 || v > 2.11)) { say(t('plotstyle.lwlist.bad')); render(); return; }
+      tables = tables.map((x) => { if (x.name !== name) return x; const { lwList, ...rest } = x; void lwList; return { ...rest, ...(r.table.lwList ? { lwList: r.table.lwList } : {}) }; });
+      render();
+    });
+    ltScaleIn.addEventListener('change', () => {
+      const v = ltScaleIn.value.trim() === '' ? null : Number(ltScaleIn.value);
+      if (v !== null && !(v > 0 && v <= 100)) { say(t('plotstyle.ltscale.bad')); render(); return; }
+      tables = tables.map((x) => { if (x.name !== name) return x; const { ltScale, ...rest } = x; void ltScale; return { ...rest, ...(v && v !== 1 ? { ltScale: v } : {}) }; });
+      render();
+    });
     allBtn.addEventListener('click', () => { sel = new Set(Array.from({ length: 255 }, (_, k) => k + 1)); renderPen(); markCells(); });
     tableSel.addEventListener('change', () => { name = tableSel.value; render(); });
     const freeName = (base) => { let n = base, k = 2; while (findTable({ meta: { plotStyles: { tables } } }, n)) n = base + ' (' + k++ + ')'; return n; };
@@ -124,7 +153,7 @@ export function installPlotStyles({ root, doc, host, el, t, print, colorLabel, a
       const act = ev.target.closest('[data-ps-act]')?.dataset.psAct;
       if (!act) return;
       if (act === 'new') addTable({ name: freeName(t('plotstyle.new.name')), description: '', pens: {} }) && say(t('plotstyle.made', { name })) ;
-      else if (act === 'copy') { const tb = current(); addTable({ name: freeName(label(tb.name) + ' ' + t('plotstyle.copy.suffix')), description: tb.description || '', pens: { ...cleanTable({ ...tb, name: 'x' }).table.pens } }) && say(t('plotstyle.made', { name })); }
+      else if (act === 'copy') { const tb = current(); addTable({ name: freeName(label(tb.name) + ' ' + t('plotstyle.copy.suffix')), description: tb.description || '', pens: { ...cleanTable({ ...tb, name: 'x' }).table.pens }, ...(tb.lwList ? { lwList: [...tb.lwList] } : {}), ...(tb.ltScale ? { ltScale: tb.ltScale } : {}) }) && say(t('plotstyle.made', { name })); }
       else if (act === 'delete' && editable()) { tables = tables.filter((x) => x.name !== name); say(t('plotstyle.deleted', { name })); name = tables[0]?.name || 'monochrome'; render(); }
       else if (act === 'export') {
         const tb = current();

@@ -76,6 +76,20 @@ const ansiPushNc = () => [L(0, 5, 0, 1.2), L(0, -1.2, 0, -5), C(0, 1.2, 0.6), C(
 const breakerCross = () => [L(-0.9, 1.6, 0.9, 3.4), L(-0.9, 3.4, 0.9, 1.6)];
 const threePole = (one) => [-5, 0, 5].flatMap((dx) => one().map((e) => shift(e, dx, 0)));
 const linkDash = (y) => dashed(-6.3, y, 3.7, y, 0.8, 0.8);
+/**
+ * Residual-current devices (0.7 ELEC-BUILDING): one breaker pole at each x, a dashed link, and the box with I∆ (residual
+ * current) — `over` adds the I> box of an RCBO (residual current with overcurrent protection) beside it.
+ */
+const rcdDraw = (xs, over = false) => {
+  const x0 = xs[0], x1 = xs[xs.length - 1], left = x0 - 4.5;
+  return [...xs.flatMap((x) => [...iecNo(), ...breakerCross()].map((e) => shift(e, x, 0))), ...dashed(x0 - 3.3, 0, x1 + 1.2, 0, 0.8, 0.8),
+    R(left - 4, -1.8, left, 1.8), T(left - 2, 0, 'I\u0394', 1.8), ...(over ? [R(left - 4, -5, left, -1.8 - 0.4), T(left - 2, -3.4, 'I>', 1.5)] : [])];
+};
+const rcdPins = (n) => {
+  const xs = n === 2 ? [-5, 5] : [-7.5, -2.5, 2.5, 7.5], lab = n === 2 ? ['1', '2', 'N', 'N'] : ['1', '2', '3', '4', '5', '6', 'N', 'N'];
+  return { xs, pins: xs.flatMap((x, i) => [['P' + (2 * i + 1), x, 5, lab[2 * i]], ['P' + (2 * i + 2), x, -5, lab[2 * i + 1]]]) };
+};
+const RCD2 = rcdPins(2), RCD4 = rcdPins(4);
 
 export const SYMBOLS = [
   // contacts
@@ -116,6 +130,9 @@ export const SYMBOLS = [
     pins: [['P1', -5, 5, '1'], ['P2', -5, -5, '2'], ['P3', 0, 5, '3'], ['P4', 0, -5, '4'], ['P5', 5, 5, '5'], ['P6', 5, -5, '6']],
     draw: { iec: () => [...threePole(() => [...iecNo(), ...breakerCross()]), ...linkDash(0), R(-10.5, -1.5, -7.5, 1.5), P([[-10.5, -0.6], [-9.5, -0.6], [-9.5, 0.6], [-8.5, 0.6], [-8.5, -0.6], [-7.5, -0.6]]), T(-9, 2.8, 'I>', 1.8)],
       ansi: () => [...threePole(() => [L(0, 5, 0, 2), L(0, -2, 0, -5), C(0, 2, 0.6), C(0, -2, 0.6), A(1.8, 0, 2.6, 110, 250)]), ...dashed(-6.5, 0, 6.5, 0, 0.8, 0.8), T(-8, 0, 'MPCB', 1.5, 'right')] } },
+  { key: 'rcd.2p', group: 'protection', role: 'device', kind: 'no', poles: 2, pins: RCD2.pins, draw: { iec: () => rcdDraw(RCD2.xs) } },
+  { key: 'rcd.4p', group: 'protection', role: 'device', kind: 'no', poles: 4, pins: RCD4.pins, draw: { iec: () => rcdDraw(RCD4.xs) } },
+  { key: 'rcbo', group: 'protection', role: 'device', kind: 'no', poles: 2, pins: RCD2.pins, draw: { iec: () => rcdDraw(RCD2.xs, true) } },
   { key: 'overload', group: 'protection', role: 'device', poles: 3,
     pins: [['P1', -5, 5, '1'], ['P2', -5, -5, '2'], ['P3', 0, 5, '3'], ['P4', 0, -5, '4'], ['P5', 5, 5, '5'], ['P6', 5, -5, '6']],
     draw: { iec: () => [R(-7, -2.5, 7, 2.5), ...[-5, 0, 5].flatMap((x) => [L(x, 5, x, 2.5), L(x, -2.5, x, -5), P([[x, 2.5], [x, 0.8], [x - 1, 0.8], [x - 1, -0.8], [x, -0.8], [x, -2.5]])])],
@@ -156,7 +173,7 @@ export const LETTERS = {
   'contact.no': 'K', 'contact.nc': 'K', 'contact.co': 'K', 'contact.no.delay': 'K', 'contact.main.3p': 'Q',
   'pushbutton.no': 'S', 'pushbutton.nc': 'S', 'switch.selector': 'S', 'switch.manual': 'S', 'switch.limit': 'B',
   coil: 'K', 'coil.on-delay': 'K', 'coil.off-delay': 'K',
-  fuse: 'F', breaker: 'F', 'breaker.3p': 'Q', 'breaker.motor': 'Q', overload: 'F', disconnector: 'Q',
+  fuse: 'F', breaker: 'F', 'rcd.2p': 'F', 'rcd.4p': 'F', rcbo: 'F', 'breaker.3p': 'Q', 'breaker.motor': 'Q', overload: 'F', disconnector: 'Q',
   'motor.3ph': 'M', 'motor.dc': 'M', lamp: 'P', horn: 'P', transformer: 'T', terminal: 'X', 'plc.input': 'A', 'plc.output': 'A', earth: '',
 };
 

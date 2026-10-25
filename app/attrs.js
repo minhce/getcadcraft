@@ -12,7 +12,7 @@
  * `tag`) and call resolveAttribs() once every block is known; it turns them into attrs/attloc.
  */
 
-import { insertMatrix, mInverse, txEntity, normAngle, normTag, attrTexts } from './geom.js';
+import { insertMatrix, mInverse, txEntity, normAngle, normTag, attrTexts, attdefHidden } from './geom.js';
 
 export { normTag };
 
@@ -45,11 +45,12 @@ export function attrRows(e, blk) {
   const vals = e.attrs || {};
   const has = (t) => Object.prototype.hasOwnProperty.call(vals, t);
   const seen = new Set();
-  for (const d of blk?.attdefs || []) {
+  (blk?.attdefs || []).forEach((d, j) => {
     seen.add(d.tag);
-    if (!d.constant && !has(d.tag)) continue;
-    rows.push({ tag: d.tag, value: d.constant ? d.def : String(vals[d.tag] ?? ''), prompt: d.prompt, invisible: !!(e.attloc?.[d.tag]?.invisible ?? d.invisible), constant: !!d.constant, preset: !!d.preset });
-  }
+    if (!d.constant && !has(d.tag)) return;
+    rows.push({ tag: d.tag, value: d.constant ? d.def : String(vals[d.tag] ?? ''), prompt: d.prompt, invisible: !!(e.attloc?.[d.tag]?.invisible ?? d.invisible), constant: !!d.constant, preset: !!d.preset,
+      ...(attdefHidden(blk, j) ? { hidden: true } : {}) });   // its visibility state hides it (the value is kept)
+  });
   for (const tag of Object.keys(vals)) if (!seen.has(tag)) rows.push({ tag, value: String(vals[tag] ?? ''), prompt: '', invisible: !!e.attloc?.[tag]?.invisible, constant: false, preset: false, undefinedTag: true });
   return rows;
 }
@@ -90,11 +91,15 @@ function sameSpot(t, d, invisible) {
     (t.ha || 'left') === (d.ha || 'left') && (t.va || 'baseline') === (d.va || 'baseline') && invisible === !!d.invisible && (t.layer ?? '0') === (d.layer ?? '0') && (t.color ?? null) === (d.color ?? null);
 }
 
-/** Attribute texts in WORLD coordinates (for writing ATTRIBs): text entities with `tag` and `invisible`. */
+/**
+ * Attribute texts in WORLD coordinates (for writing ATTRIBs): text entities with `tag`, `invisible` and `hidden` (hidden by
+ * the dynamic block's visibility state: geom.attdefHidden). Constant attributes are left out (their definition says them).
+ */
 export function worldAttribs(e, blk) {
   const m = insertMatrix(e, blk);
-  return attrTexts({ ...e, attrs: nonConstant(e, blk) }, { ...blk, attdefs: (blk.attdefs || []).filter((d) => !d.constant) }, true)
-    .map((t) => ({ ...txEntity(t, m), tag: t.tag, invisible: !!t.invisible }));
+  const constant = new Set((blk.attdefs || []).filter((d) => d.constant).map((d) => d.tag));
+  return attrTexts({ ...e, attrs: nonConstant(e, blk) }, blk, true).filter((t) => !constant.has(t.tag))
+    .map((t) => ({ ...txEntity(t, m), tag: t.tag, invisible: !!t.invisible, ...(t.hidden ? { hidden: true } : {}) }));
 }
 function nonConstant(e, blk) {
   const out = { ...(e.attrs || {}) };

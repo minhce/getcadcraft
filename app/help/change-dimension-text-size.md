@@ -9,7 +9,7 @@ keywords: dimension text size, text height, dimtxt, dimscale, dimension text too
 ## For the dimensions you make next
 
 1. Press {{key:Esc}} so nothing is selected: the right panel reads {{ui:Current settings}}.
-2. Under {{ui:New dimensions}}, type the height you want on paper in {{ui:Text height}} (for example `2.5` for 2.5 mm, or
+2. Scroll down the panel to {{ui:New dimensions}}. Type the height you want on paper in {{ui:Text height}} (for example `2.5` for 2.5 mm, or
    `3/32"`) and press {{key:Enter}}.
 3. Set {{ui:Overall scale}} to the plot scale (`50` for 1:50, `48` for 1/4" = 1'-0"): every size is multiplied by it.
 
@@ -18,7 +18,8 @@ On the command line, {{cmd:DIMTXT}} sets the height and {{cmd:DIMSCALE}} the ove
 ## For dimensions already in the drawing
 
 1. Select the dimensions (one, or several of them: pick {{ui:Dimension}} in the list at the top of Properties).
-2. Type the new {{ui:Text height}}, or a new {{ui:Overall scale}}, and press {{key:Enter}}.
+2. Type the new {{ui:Text height}} (in the {{ui:Text}} section), or a new {{ui:Overall scale}} (in the {{ui:Fit}} section
+   further down), and press {{key:Enter}}.
 
 They redraw at once, in one undo step. A dimension from another program's file is redrawn in CadCraft's style as soon as you
 change it.

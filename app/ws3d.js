@@ -23,6 +23,9 @@ import { STYLES } from './model3d.js';
 import { el, fmt } from './ui-util.js';
 import { mountViewCube, mountAxisIcon } from './m3d/viewcube.js';
 import { cameraCubeOptions } from './m3d/viewcube-camera.js';
+import * as acisLib from './acis/index.js';   // cc-acis (0.7 D7.25): loads with the 3D tab
+import { solidMeshes } from './acis-cad.js';
+import { aciHex } from './doc.js';
 
 import { t, has } from './i18n.js';
 /** Toolbar groups that only make sense on the 2D tabs: hidden while the 3D tab shows. */
@@ -35,6 +38,60 @@ class CadView3D extends View3D {
     this.lineGroup = new THREE.Group();
     this.scene.add(this.lineGroup);
     this.linesKey = null;
+    this.solidGroup = new THREE.Group();   // other programs' 3D solids (0.7 D7.25): drawn as they are, never picked or edited
+    this.scene.add(this.solidGroup);
+    this.solidsKey = null;
+  }
+  /** The drawing's kept 3D solids (acis-cad.js) in their layer colours, with their own edges; layers off or frozen left out. */
+  buildSolids() {
+    const sm = this.ws.solidMeshes?.();
+    const doc = this.ws.doc;
+    const layerState = sm ? sm.list.map((x) => { const l = doc.layers.get(x.layer); return l ? (l.on && !l.frozen ? 1 : 0) + ':' + l.color : '1:7'; }).join(',') : '';
+    const key = (sm ? sm.list.length : 0) + '|' + this.ws.k + '|' + this.style.mode + '|' + this.style.edges + '|' + this.c.ink + '|' + this.c.front + '|' + this.c.bg + '|' + layerState;
+    if (key === this.solidsKey) return;
+    this.solidsKey = key;
+    for (const o of [...this.solidGroup.children]) { this.solidGroup.remove(o); o.geometry?.dispose(); o.material?.dispose(); }
+    if (!sm || !sm.list.length) return;
+    const k = this.ws.k;
+    let ox = Infinity, oy = Infinity, oz = Infinity;
+    for (const x of sm.list) { ox = Math.min(ox, x.body.box[0]); oy = Math.min(oy, x.body.box[1]); oz = Math.min(oz, x.body.box[2]); }
+    // around the solids' own corner, so survey-sized coordinates keep their precision on the GPU
+    this.solidGroup.position.set(ox * k, oy * k, oz * k);
+    const hidden = this.style.mode === 'hidden';
+    for (const x of sm.list) {
+      const l = doc.layers.get(x.layer);
+      if (l && (!l.on || l.frozen)) continue;
+      const c = x.color === null || x.color === undefined ? (l ? l.color : 7) : x.color === 0 ? 7 : x.color;
+      const hex = typeof c === 'string' ? c : aciHex(c);
+      const P = x.body.positions, pos = new Float32Array(P.length);
+      for (let i = 0; i < P.length; i += 3) { pos[i] = (P[i] - ox) * k; pos[i + 1] = (P[i + 1] - oy) * k; pos[i + 2] = (P[i + 2] - oz) * k; }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      g.setIndex(new THREE.BufferAttribute(x.body.triangles, 1));
+      g.computeVertexNormals();
+      const common = { side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 };
+      const mat = hidden ? new THREE.MeshBasicMaterial({ color: this.c.bg, ...common }) : new THREE.MeshLambertMaterial({ color: hex === 'ink' ? this.c.front : hex, ...common });
+      this.solidGroup.add(new THREE.Mesh(g, mat));
+      if (this.style.edges || hidden) {
+        // the solid's own edges: where two of its faces meet, and open edges
+        const T = x.body.triangles, F = x.body.faceOf, seen = new Map();
+        for (let i = 0; i < T.length; i += 3) for (let j = 0; j < 3; j++) {
+          const a = T[i + j], b = T[i + (j + 1) % 3], kk = a < b ? a * 4294967296 + b : b * 4294967296 + a;
+          const f = F[i / 3], s = seen.get(kk);
+          seen.set(kk, s === undefined ? f : s === f ? -2 : -1);
+        }
+        const L = [];
+        for (const [kk, s] of seen) if (s !== -2) { const a = Math.floor(kk / 4294967296), b = kk % 4294967296; L.push(pos[a * 3], pos[a * 3 + 1], pos[a * 3 + 2], pos[b * 3], pos[b * 3 + 1], pos[b * 3 + 2]); }
+        if (L.length) {
+          const lg = new THREE.BufferGeometry();
+          lg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(L), 3));
+          this.solidGroup.add(new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: this.c.ink })));
+        }
+      }
+    }
+    this.solidGroup.updateMatrixWorld(true);
+    const b = this.ws.solidsBox?.();
+    if (b) this.radius = Math.max(this.radius || 0, Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]));
   }
   buildLines() {
     for (const o of [...this.lineGroup.children]) { this.lineGroup.remove(o); o.geometry?.dispose(); o.material?.dispose(); }
@@ -58,6 +115,7 @@ class CadView3D extends View3D {
   build() {
     super.build();
     this.buildLines();
+    this.buildSolids();
     const c = this.ws.cloudBox?.();   // a point cloud must not fall outside the clip range
     if (c) this.radius = Math.max(this.radius || 0, Math.hypot(c.max[0] - c.min[0], c.max[1] - c.min[1], c.max[2] - c.min[2]));
   }
@@ -114,6 +172,25 @@ export function createWorkspace3D({ root, doc, engine, host, print, submit, clos
     view.invalidate();
   };
   ws.cloud3d = () => cloud3d;   // for tests
+  // other programs' 3D solids (0.7 D7.25, acis-cad.js): read once when first shown; what was drawn and what not, said once
+  let solidsSaid = null;
+  ws.solidMeshes = () => {
+    if (!doc.solids?.length) return null;
+    const sm = solidMeshes(doc, acisLib);
+    if (solidsSaid !== sm) {
+      solidsSaid = sm;
+      const nd = sm.notDrawn.size ? ' ' + t('ccacis.not_drawn', { list: acisLib.notDrawnText(sm.notDrawn) }) : '';
+      print(t('ccacis.app.drawn', { solids: sm.solids, faces: sm.drawn }) + nd);
+    }
+    return sm;
+  };
+  ws.solidsBox = () => {
+    const sm = doc.solids?.length ? solidMeshes(doc, acisLib) : null;
+    if (!sm || !sm.list.length) return null;
+    const k = ws.k, min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    for (const x of sm.list) for (let i = 0; i < 3; i++) { min[i] = Math.min(min[i], x.body.box[i] * k); max[i] = Math.max(max[i], x.body.box[i + 3] * k); }
+    return { min, max };
+  };
   ws.cloudChanged();
   // the corner indicator (Settings › CadCraft): view cube top right, or the X/Y/Z axis icon bottom left (or none)
   const cubeOpts = cameraCubeOptions(ws.cam, {
